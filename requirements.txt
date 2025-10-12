@@ -1,0 +1,10 @@
+pandas
+scikit-learn
+xgboost
+joblib
+PyGithub
+openai
+atlassian-python-api
+streamlit
+python-dotenv
+pymongo

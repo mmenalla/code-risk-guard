@@ -1,0 +1,15 @@
+.venv
+dags/src/.env
+logs
+dags/src/pipeline.py
+dags/src/.env
+.idea
+dags/src/models/artifacts
+dags/src/models/__pycache__/
+dags/src/llm/__pycache__/
+dags/src/jira/__pycache__/
+dags/src/__pycache__/
+dags/__pycache__/
+dags/src/utils/__pycache__/
+dags/src/data/__pycache__/
+dags/src/dashboard/__pycache__/
