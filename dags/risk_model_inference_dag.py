@@ -18,7 +18,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 MONGO_URI = "mongodb://admin:admin@mongo:27017/risk_model_db?authSource=admin"
-
+REPO = os.getenv("GITHUB_REPO")
 
 # ---------------------------------------------------------------------
 # Task Functions
@@ -29,7 +29,7 @@ def fetch_latest_github_data(**context):
     days_back = 30
     logger.info(f"Fetching PRs merged in the last {days_back} days...")
     collector = GitHubDataCollector()
-    raw_df = collector.fetch_pr_data_for_repo(repo_name="mmenalla/readlike-me", since_days=15)
+    raw_df = collector.fetch_pr_data_for_repo(repo_name=REPO, since_days=days_back)
 
     if raw_df.empty:
         logger.warning("No PRs fetched from GitHub.")
@@ -115,7 +115,7 @@ def generate_jira_tickets(**context):
             "bug_ratio": row.get("bug_ratio", 0),
             "recent_prs": row.get("pr_count", 0),
             "code_snippet": GitHubDataCollector().get_code_snippet_from_github(
-                row["module"], ref=row.get("base_ref", "main")
+                REPO, row["module"], ref=row.get("base_ref", "main")
             ),
         }
 

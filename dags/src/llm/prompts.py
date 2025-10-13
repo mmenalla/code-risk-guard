@@ -29,7 +29,7 @@ Instructions:
 
 Title: Short, action-oriented summary.
 Description: What is wrong, what should be done, which part of the code is affected.
-*Acceptance Criteria*: 2-3 measurable bullet points.
+**Acceptance Criteria**: 2-3 measurable bullet points.
 
 Do NOT include JSON markers, code fences, or extra formatting.
 """

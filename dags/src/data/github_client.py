@@ -52,7 +52,6 @@ class GitHubDataCollector:
         })
 
         for pr_issue in prs:
-            # Convert issue to PR object
             try:
                 pr = self.client.get_repo(repo_name).get_pull(pr_issue.number)
             except Exception as e:
@@ -94,7 +93,7 @@ class GitHubDataCollector:
 
         return pd.DataFrame(rows)
 
-    def get_code_snippet_from_github(self, module_path: str, ref: str = "main") -> str:
+    def get_code_snippet_from_github(self, repo: str, module_path: str, ref: str = "main") -> str:
         """
         Fetches the code of a file/module from GitHub.
 
@@ -102,13 +101,8 @@ class GitHubDataCollector:
         :param ref: branch, tag, or commit, e.g., "main"
         :return: string containing the file content
         """
-        # Extract owner/repo from module_path if needed
-        # Example assumes a fixed repo for simplicity
-        owner = "your-github-org-or-user"
-        repo = "your-repo-name"
 
-        # Construct GitHub API URL for file contents
-        url = f"https://api.github.com/repos/{owner}/{repo}/contents/{module_path}?ref={ref}"
+        url = f"https://api.github.com/repos/{repo}/contents/{module_path}?ref={ref}"
 
         logging.info(f"Fetching GitHub file: {url}")
         response = requests.get(url, headers=self.headers)
