@@ -7,21 +7,37 @@ logger = logging.getLogger(__name__)
 
 def push_to_mongo(df, mongo_uri: str, mongo_db: str, mongo_collection: str):
     """
-    Appends a DataFrame to a MongoDB collection.
-
-    Args:
-        df (pd.DataFrame): Data to insert.
-        mongo_uri (str): MongoDB connection URI.
-        mongo_db (str): Database name.
-        mongo_collection (str): Collection name.
+    Appends a DataFrame to a MongoDB collection incrementally.
     """
     if df.empty:
         logger.warning("DataFrame is empty. Nothing to insert into MongoDB.")
         return
 
+    try:
+        df['created_at'] = pd.to_datetime(df['created_at'], utc=True)
+    except Exception as e:
+        logger.error(f"Error converting 'created_at' to datetime: {e}")
+
     client = MongoClient(mongo_uri)
     db = client[mongo_db]
     collection = db[mongo_collection]
+
+    last_date = None
+    if collection.count_documents({}) > 0:
+        try:
+            last_date = collection.find_one(sort=[("created_at", -1)])["created_at"]
+            last_date = pd.to_datetime(last_date)
+            if last_date.tzinfo is None:
+                last_date = last_date.tz_localize('UTC')
+        except Exception as e:
+            logger.error(f"Error fetching last processed date: {e}")
+            last_date = None
+
+    if last_date is not None:
+        df = df[df['created_at'] > last_date]
+        if df.empty:
+            logger.info("No new records to insert. Incremental load skipped.")
+            return
 
     records = df.to_dict(orient="records")
     result = collection.insert_many(records)
@@ -32,7 +48,6 @@ def load_labeled_data_from_mongo(
     mongo_db: str,
     mongo_collection: str
 ) -> pd.DataFrame:
-    """Fetch labeled data from MongoDB and return as a Pandas DataFrame"""
     logger.info(f"Connecting to MongoDB at {mongo_uri}...")
     client = MongoClient(mongo_uri)
     db = client[mongo_db]

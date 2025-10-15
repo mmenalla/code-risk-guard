@@ -26,7 +26,7 @@ REPO = os.getenv("GITHUB_REPO")
 
 def fetch_latest_github_data(**context):
     """Fetch latest PRs using GitHub search API (merged in last N days)."""
-    days_back = 30
+    days_back = 10
     logger.info(f"Fetching PRs merged in the last {days_back} days...")
     collector = GitHubDataCollector()
     raw_df = collector.fetch_pr_data_for_repo(repo_name=REPO, since_days=days_back)
@@ -44,7 +44,6 @@ def fetch_latest_github_data(**context):
 
 
 def generate_features(**context):
-    """Transform raw GitHub PR data into model-ready features."""
     raw_path = context['ti'].xcom_pull(key='inference_raw_path')
     if not raw_path or not os.path.exists(raw_path):
         raise FileNotFoundError("Missing raw data file for feature generation.")
@@ -79,7 +78,6 @@ def predict_risk(**context):
     predictor = RiskPredictor(model_path=str(latest_model_path))
     predictions_df = predictor.predict(feature_df)
 
-    # Log distribution of predicted risk scores
     logger.info(
         f"Predicted risk scores — mean: {predictions_df['risk_score'].mean():.3f}, "
         f"std: {predictions_df['risk_score'].std():.3f}"
@@ -126,7 +124,7 @@ def generate_jira_tickets(**context):
         })
 
     logger.info(f"Generating LLM-based Jira ticket drafts for {len(tickets)} high-risk modules...")
-    ticket_drafts = ticket_generator.generate_tickets_bulk(tickets, num_of_tickets=None)
+    ticket_drafts = ticket_generator.generate_tickets_bulk(tickets, num_of_tickets=3)
     ticket_drafts = [{**t, "is_deleted": False} for t in ticket_drafts]
 
     # Store ticket drafts to Mongo for review / downstream processing
@@ -158,7 +156,6 @@ with DAG(
     start_date=datetime(2025, 1, 1),
     catchup=False,
     default_args=default_args,
-    tags=["risk", "inference", "github", "jira"],
 ) as dag:
 
     fetch_task = PythonOperator(

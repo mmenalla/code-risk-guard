@@ -23,7 +23,6 @@ def fetch_repo_pr_data(repo_name: str, **context):
     logger.info(f"REPO: {repo_name}")
     df = collector.fetch_pr_data_for_repo(repo_name, since_days=150, max_prs=200)
 
-    # push per-repo DataFrame as parquet file
     os.makedirs(Config.DATA_DIR, exist_ok=True)
     repo_path = Config.DATA_DIR / f"raw_pr_{repo_name.replace('/', '_')}.parquet"
     df.to_parquet(repo_path, index=False)
@@ -99,7 +98,7 @@ def train_model(**context):
     df = pd.read_parquet(labeled_path)
     df.drop(inplace=True, columns=['repo_name', 'created_at'], errors='ignore')
     trainer = RiskModelTrainer()
-    model, model_name, X_test, y_test = trainer.train_or_finetune(df)
+    model, model_name, X_test, y_test = trainer.train(df)
 
     context['ti'].xcom_push(key='X_test', value=X_test.to_dict(orient='list'))
     context['ti'].xcom_push(key='y_test', value=y_test.tolist())
@@ -118,7 +117,7 @@ def evaluate_model(**context):
 
     trainer = RiskModelTrainer(model_path=model_name)
     trainer.model = trainer.load_model(model_name)
-    metrics = trainer.evaluate(X_test, y_test)
+    metrics = trainer.evaluate(X_test, y_test, model_name)
     logger.info(f"Evaluation metrics: {metrics}")
 
 
@@ -178,5 +177,4 @@ with DAG(
         provide_context=True
     )
 
-    # --- DAG dependencies ---
     fetch_group >> aggregate_task >> feature_task >> label_task >> train_task >> evaluate_task

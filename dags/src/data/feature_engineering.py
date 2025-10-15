@@ -24,20 +24,14 @@ class FeatureEngineer:
         """
         df = df.copy()
 
-        # Avoid division by zero
         df['prs'] = df['prs'].replace(0, 1)
         df['unique_authors'] = df['unique_authors'].replace(0, 1)
 
-        # Derived features
+        # Features
         df['bug_ratio'] = df['bug_prs'] / df['prs']
         df['churn_per_pr'] = df['churn'] / df['prs']
         df['lines_per_pr'] = (df['lines_added'] + df['lines_removed']) / df['prs']
         df['lines_per_author'] = (df['lines_added'] + df['lines_removed']) / df['unique_authors']
-
-        # log-transform skewed features
-        # log1p compresses large values while keeping zeros → helps models like XGBoost learn patterns better
-        # for col in ['lines_added', 'lines_removed', 'churn', 'lines_per_pr', 'lines_per_author']:
-        #     df[f'log_{col}'] = np.log1p(df[col])
 
         feature_cols = [c for c in df.columns if c != 'module']
         return df[['module'] + feature_cols]

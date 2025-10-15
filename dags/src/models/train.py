@@ -9,6 +9,7 @@ import xgboost as xgb
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, confusion_matrix
 from src.utils.config import Config
+from src.data.save_incremental_labeled_data import log_model_metrics
 
 
 class RiskModelTrainer:
@@ -25,54 +26,36 @@ class RiskModelTrainer:
         else:
             self.logger.info("No existing model found. Training from scratch.")
 
-    def train_or_finetune(self, df: pd.DataFrame, feature_cols: list = None):
-        """Fine-tune existing model if available, otherwise train new"""
+    def train(self, df: pd.DataFrame, feature_cols: list = None):
+        """Always train on the full incremental dataset"""
         df = df.copy()
-        feature_cols = feature_cols or [c for c in df.columns if c not in ['module', 'needs_maintenance']]
+        feature_cols = feature_cols or [
+            c for c in df.columns
+            if c not in ['module', 'needs_maintenance', 'repo_name', 'created_at', '_id']
+        ]
+
         X = df[feature_cols]
         y = df['needs_maintenance']
 
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42
+        )
 
-        self.load_existing_model()
-
-        if self.model is None:
-            # Train from scratch
-            self.model = xgb.XGBClassifier(
-                objective='binary:logistic',
-                eval_metric='logloss',
-                use_label_encoder=False,
-                n_estimators=100,
-                max_depth=4,
-                learning_rate=0.1,
-                random_state=42
-            )
-            self.model.fit(X_train, y_train)
-
-        else:
-            # Fine-tune from existing Booster
-            self.logger.info("Fine-tuning existing model...")
-
-            booster = self.model.get_booster()
-            dtrain = xgb.DMatrix(X_train, label=y_train)
-
-            params = self.model.get_xgb_params()
-
-            # Continue training for a few boosting rounds
-            updated_booster = xgb.train(
-                params=params,
-                dtrain=dtrain,
-                xgb_model=booster,
-                num_boost_round=20,
-            )
-
-            # Replace the model’s internal booster
-            self.model._Booster = updated_booster
+        self.model = xgb.XGBClassifier(
+            objective='binary:logistic',
+            eval_metric='logloss',
+            use_label_encoder=False,
+            n_estimators=100,
+            max_depth=4,
+            learning_rate=0.1,
+            random_state=42
+        )
+        self.model.fit(X_train, y_train)
 
         model_name = self.save_model()
         return self.model, model_name, X_test, y_test
 
-    def evaluate(self, X_test: pd.DataFrame, y_test: pd.Series):
+    def evaluate(self, X_test: pd.DataFrame, y_test: pd.Series, model_name: str):
         """Evaluate the trained model"""
         y_pred = self.model.predict(X_test)
 
@@ -98,21 +81,27 @@ class RiskModelTrainer:
                 f"Recall: {tp / (tp + fn + 1e-9):.3f}, "
                 f"F1: {2 * tp / (2 * tp + fp + fn + 1e-9):.3f}"
             )
+
+            metrics = {
+                "accuracy": acc,
+                "confusion_matrix": cm.tolist(),
+                "labels": labels.tolist(),
+                "tn": tn,
+                "fp": fp,
+                "fn": fn,
+                "tp": tp,
+            }
+
+            # Log metrics to MongoDB
+            log_model_metrics(metrics, model_name=model_name.split("/")[-1].rsplit(".", 1)[0])
+
+            return metrics
         else:
             self.logger.info(
                 f"⚠️ Evaluation skipped detailed breakdown — only one class ({labels[0]}) "
                 f"present in test or predicted data."
             )
-
-        return {
-            "accuracy": acc,
-            "confusion_matrix": cm.tolist(),
-            "labels": labels.tolist(),
-            "tn": tn,
-            "fp": fp,
-            "fn": fn,
-            "tp": tp,
-        }
+            return None
 
     def save_model(self):
         """Versioned model saving"""

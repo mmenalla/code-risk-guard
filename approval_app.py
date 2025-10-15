@@ -8,19 +8,16 @@ from dags.src.jira.jira_client import JiraClient
 load_dotenv()
 MONGO_URI = "mongodb://admin:admin@localhost:27017/risk_model_db?authSource=admin"
 
-# --- MongoDB setup ---
 DB_NAME = os.getenv("MONGO_DB", "risk_model_db")
 COLLECTION_NAME = os.getenv("MONGO_COLLECTION", "ticket_drafts")
 
 client = MongoClient(MONGO_URI)
 collection = client[DB_NAME][COLLECTION_NAME]
 
-# --- Initialize Jira client ---
 jira_client = JiraClient()
 
-# --- Streamlit UI setup ---
 st.set_page_config(page_title="AI Risk Ticket Review", layout="wide")
-st.title("🧠 AI Risk Model — Ticket Review Dashboard")
+st.title("AI Risk Model — Ticket Review Dashboard")
 
 # --- Load tickets ---
 tickets = list(collection.find({"is_deleted": False}))
@@ -36,7 +33,6 @@ else:
         ticket_id = str(ticket["_id"])
         status = st.session_state.ticket_status.get(ticket_id, None)
 
-        # Apply visual feedback
         if status == "approved":
             color = "#d4edda"  # light green
         elif status == "deleted":

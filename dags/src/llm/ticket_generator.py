@@ -64,17 +64,3 @@ class JiraTicketGenerator:
             ticket = self.generate_ticket(mod['module'], mod['risk_score'], mod.get('context', {}))
             tickets.append(ticket)
         return tickets
-
-
-
-if __name__ == "__main__":
-    modules = [
-        {"module": "app/st_app_server.py", "risk_score": 0.83, "context": {"recent_churn": 120, "bug_ratio": 0.33, "recent_prs": 5}}
-    ]
-
-    generator = JiraTicketGenerator()
-    tickets = generator.generate_tickets_bulk(modules)
-    for t in tickets:
-        print(f"Module: {t['module']}")
-        print(f"Title: {t['title']}")
-        print(f"Description: {t['description']}\n")

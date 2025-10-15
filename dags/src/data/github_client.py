@@ -76,7 +76,6 @@ class GitHubDataCollector:
                 for module in touched_modules:
                     module_stats[module]['bug_prs'] += 1
 
-        # Convert to DataFrame
         rows = []
         for module, stats in module_stats.items():
             rows.append({
@@ -96,11 +95,10 @@ class GitHubDataCollector:
     def get_code_snippet_from_github(self, repo: str, module_path: str, ref: str = "main") -> str:
         """
         Fetches the code of a file/module from GitHub.
-
-        :param module_path: path in repo, e.g., "src/models/train.py"
-        :param ref: branch, tag, or commit, e.g., "main"
-        :return: string containing the file content
         """
+        import base64
+        import logging
+        import requests
 
         url = f"https://api.github.com/repos/{repo}/contents/{module_path}?ref={ref}"
 
@@ -109,15 +107,24 @@ class GitHubDataCollector:
 
         if response.status_code == 200:
             content_json = response.json()
+
+            # Case 1: GitHub returned a directory listing (list of files)
+            if isinstance(content_json, list):
+                logging.warning(f"'{module_path}' is a directory, not a file. Skipping.")
+                return ""
+
+            # Case 2: GitHub returned a single file
             if content_json.get("encoding") == "base64":
                 file_content = base64.b64decode(content_json["content"]).decode("utf-8")
                 return file_content
-            else:
-                logging.warning("Unexpected encoding for file content, returning empty string")
-                return ""
+
+            logging.warning(f"Unexpected encoding or format for '{module_path}', returning empty string.")
+            return ""
+
         elif response.status_code == 404:
             logging.warning(f"File not found: {module_path} at ref {ref}")
             return ""
+
         else:
             logging.error(f"Failed to fetch file: {response.status_code} - {response.text}")
             return ""
