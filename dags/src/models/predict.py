@@ -1,3 +1,5 @@
+import logging
+
 import pandas as pd
 import joblib
 
@@ -19,8 +21,7 @@ class RiskPredictor:
         Returns df with predicted probability and risk label.
         """
         df_features = self.fe.transform(df)
-
-        # Features for prediction (exclude module name)
+        logging.warning(f"Features for prediction: {df_features.columns.tolist()}")
         feature_cols = [c for c in df_features.columns if c != 'module']
         X = df_features[feature_cols]
         non_numeric_cols = X.select_dtypes(exclude=['int64', 'float64', 'bool']).columns
@@ -33,4 +34,4 @@ class RiskPredictor:
         df_features['risk_score'] = prob
         df_features['needs_maintenance'] = (prob >= 0.5).astype(int)
 
-        return df_features[['module', 'risk_score', 'needs_maintenance']]
+        return df_features

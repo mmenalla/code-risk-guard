@@ -3,7 +3,10 @@ from pymongo import MongoClient
 from bson.objectid import ObjectId
 from dotenv import load_dotenv
 import os
+
+from dags.src.data.save_incremental_labeled_data import log_human_feedback
 from dags.src.jira.jira_client import JiraClient
+from dags.src.utils.config import Config
 
 load_dotenv()
 MONGO_URI = "mongodb://admin:admin@localhost:27017/risk_model_db?authSource=admin"
@@ -19,13 +22,11 @@ jira_client = JiraClient()
 st.set_page_config(page_title="AI Risk Ticket Review", layout="wide")
 st.title("AI Risk Model — Ticket Review Dashboard")
 
-# --- Load tickets ---
 tickets = list(collection.find({"is_deleted": False}))
 
 if not tickets:
     st.info("✅ No pending tickets to review.")
 else:
-    # Track ticket statuses in session state
     if "ticket_status" not in st.session_state:
         st.session_state.ticket_status = {}
 
@@ -38,22 +39,53 @@ else:
         elif status == "deleted":
             color = "#f8d7da"  # light red
         else:
-            color = "#ffffff"  # default white
+            color = "#ffffff"  # white
 
         with st.expander(f"📄 {ticket['title']} — ({ticket['module']})", expanded=True):
+            # --- Ticket info card ---
             st.markdown(
                 f"""
                 <div style="background-color:{color}; padding:15px; border-radius:10px;">
-                    <strong>Risk Score:</strong> {ticket['risk_score']:.3f}<br>
                     <strong>Module:</strong> {ticket['module']}<br>
-                    <strong>Description:</strong> {ticket['description']}
+                    <strong>Description:</strong> {ticket['description']}<br>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
 
-            col1, col2 = st.columns(2)
+            # --- Editable risk score with update button beside it ---
+            col_score, col_button = st.columns([3, 1])
+            with col_score:
+                new_score = st.number_input(
+                    "Risk Score (Editable)",
+                    key=f"risk_score_{ticket_id}",
+                    value=float(ticket['risk_score']),
+                    step=0.01,
+                    min_value=0.0,
+                    max_value=1.0,
+                )
 
+            with col_button:
+                if st.button(f"💾 Update", key=f"update_{ticket_id}"):
+                    collection.update_one(
+                        {"_id": ObjectId(ticket["_id"])},
+                        {"$set": {"risk_score": new_score}}
+                    )
+
+                    # --- Log manager feedback ---
+                    log_human_feedback(
+                        module=ticket["module"],
+                        repo_name=ticket.get(Config().GITHUB_REPO, "unknown_repo"),
+                        predicted_risk=ticket["risk_score"],
+                        manager_risk=new_score,
+                        prediction_id=ticket.get("prediction_id"),
+                        user_id=os.getenv("CURRENT_USER", "manager_ui"),
+                    )
+
+                    st.success(f"✅ Updated risk score for {ticket['module']} (new: {new_score:.2f})")
+
+            # --- Approve or delete buttons ---
+            col1, col2 = st.columns(2)
             with col1:
                 if st.button("✅ Approve & Send to Jira", key=f"approve_{ticket_id}"):
                     try:
@@ -86,3 +118,11 @@ else:
                     )
                     st.session_state.ticket_status[ticket_id] = "deleted"
                     st.warning("🗑️ Ticket marked as deleted.")
+                    log_human_feedback(
+                        module=ticket["module"],
+                        repo_name=ticket.get(Config().GITHUB_REPO, "unknown_repo"),
+                        predicted_risk=ticket["risk_score"],
+                        manager_risk=0.0,  # Deleted ticket treated as risk 0
+                        prediction_id=ticket.get("prediction_id"),
+                        user_id=os.getenv("CURRENT_USER", "manager_ui"),
+                    )

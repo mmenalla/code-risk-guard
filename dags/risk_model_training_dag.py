@@ -21,7 +21,7 @@ MONGO_URI = "mongodb://admin:admin@mongo:27017/risk_model_db?authSource=admin"
 def fetch_repo_pr_data(repo_name: str, **context):
     collector = GitHubDataCollector()
     logger.info(f"REPO: {repo_name}")
-    df = collector.fetch_pr_data_for_repo(repo_name, since_days=150, max_prs=200)
+    df = collector.fetch_pr_data_for_repo(repo_name, since_days=150, max_prs=500)
 
     os.makedirs(Config.DATA_DIR, exist_ok=True)
     repo_path = Config.DATA_DIR / f"raw_pr_{repo_name.replace('/', '_')}.parquet"

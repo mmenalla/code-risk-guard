@@ -103,3 +103,93 @@ def log_model_metrics(metrics: dict, model_name: str = "xgboost_risk_model",
 
     collection.insert_one(record)
     logger.info(f"Logged metrics for model '{model_name}' at {record['timestamp']}")
+
+
+def log_model_predictions(
+    predictions_df: pd.DataFrame,
+    feature_df: pd.DataFrame,
+    model_name: str,
+    mongo_uri: str = "mongodb://admin:admin@mongo:27017/risk_model_db?authSource=admin",
+    db_name: str = "risk_model_db",
+    collection_name: str = "model_predictions",
+):
+    """
+    Logs model predictions together with features used for generation.
+    Returns a mapping of {module: prediction_id} for downstream linking.
+    """
+    import pymongo
+    from datetime import datetime
+
+    client = pymongo.MongoClient(mongo_uri)
+    db = client[db_name]
+    collection = db[collection_name]
+
+    merged = feature_df.merge(
+        predictions_df[['module', 'risk_score', 'needs_maintenance']],
+        on='module',
+        how='inner'
+    )
+
+    records = []
+    for _, row in merged.iterrows():
+        features = {
+            k: v for k, v in row.items()
+            if k not in ['module', 'risk_score', 'needs_maintenance']
+        }
+        record = {
+            "model_name": model_name,
+            "module": row['module'],
+            "features": features,
+            "predicted_risk": float(row['risk_score']),
+            "needs_maintenance": int(row['needs_maintenance']),
+            "created_at": datetime.utcnow(),
+            "source": "model_inference",
+        }
+        records.append(record)
+
+    if not records:
+        logging.warning("No prediction records to insert.")
+        return {}
+
+    result = collection.insert_many(records)
+
+    id_mapping = {r['module']: str(_id) for r, _id in zip(records, result.inserted_ids)}
+
+    logging.info(f"Inserted {len(records)} prediction records with features into '{collection_name}'.")
+    return id_mapping
+
+
+def log_human_feedback(
+    module: str,
+    repo_name: str,
+    predicted_risk: float,
+    manager_risk: float,
+    prediction_id: str,
+    user_id: str,
+    mongo_uri: str = "mongodb://admin:admin@localhost:27017/risk_model_db?authSource=admin",
+    db_name: str = "risk_model_db",
+    collection_name: str = "risk_feedback",
+):
+    """
+    Logs human (manager) feedback on model predictions to MongoDB.
+    """
+    import pymongo
+    from datetime import datetime
+
+    client = pymongo.MongoClient(mongo_uri)
+    db = client[db_name]
+    collection = db[collection_name]
+
+    record = {
+        "repo_name": repo_name,
+        "module": module,
+        "predicted_risk": float(predicted_risk),
+        "manager_risk": float(manager_risk),
+        "prediction_id": prediction_id,
+        "user_id": user_id,
+        "created_at": datetime.utcnow(),
+        "source": "manual_feedback",
+    }
+
+    collection.insert_one(record)
+    logging.info(f"✅ Logged feedback for {module} by {user_id} (pred={predicted_risk:.3f}, manager={manager_risk:.3f})")

@@ -2,7 +2,7 @@ from datetime import datetime
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 
-from src.data.save_incremental_labeled_data import push_to_mongo
+from src.data.save_incremental_labeled_data import push_to_mongo, log_model_predictions
 from src.data.github_client import GitHubDataCollector
 from src.data.feature_engineering import FeatureEngineer
 from src.models.predict import RiskPredictor
@@ -26,7 +26,7 @@ REPO = os.getenv("GITHUB_REPO")
 
 def fetch_latest_github_data(**context):
     """Fetch latest PRs using GitHub search API (merged in last N days)."""
-    days_back = 10
+    days_back = 60
     logger.info(f"Fetching PRs merged in the last {days_back} days...")
     collector = GitHubDataCollector()
     raw_df = collector.fetch_pr_data_for_repo(repo_name=REPO, since_days=days_back)
@@ -89,12 +89,24 @@ def predict_risk(**context):
 
     logger.info(f"Predictions saved to {predictions_path}")
 
+    id_mapping = log_model_predictions(
+        predictions_df=predictions_df,
+        feature_df=feature_df,
+        model_name=latest_model_path.stem
+    )
+    context['ti'].xcom_push(key='prediction_id_mapping', value=id_mapping)
+
+    logger.info(f"Logged {len(id_mapping)} model predictions to MongoDB.")
+
+
+
 
 def generate_jira_tickets(**context):
     """Generate AI-based Jira tickets for high-risk modules."""
     predictions_path = context['ti'].xcom_pull(key='predictions_path')
     if not predictions_path or not os.path.exists(predictions_path):
         raise FileNotFoundError("Missing predictions file for Jira ticket generation.")
+    prediction_id_mapping = context['ti'].xcom_pull(key='prediction_id_mapping', default={})
 
     predictions_df = pd.read_parquet(predictions_path)
     high_risk_df = predictions_df[predictions_df['risk_score'] >= 0.5]
@@ -108,6 +120,9 @@ def generate_jira_tickets(**context):
     tickets = []
 
     for _, row in high_risk_df.iterrows():
+        module = row["module"]
+        prediction_id = prediction_id_mapping.get(module)
+
         context_data = {
             "recent_churn": row.get("lines_changed", 0),
             "bug_ratio": row.get("bug_ratio", 0),
@@ -120,14 +135,14 @@ def generate_jira_tickets(**context):
         tickets.append({
             "module": row["module"],
             "risk_score": float(row["risk_score"]),
+            "prediction_id": str(prediction_id) if prediction_id else None,
             "context": context_data,
         })
 
     logger.info(f"Generating LLM-based Jira ticket drafts for {len(tickets)} high-risk modules...")
-    ticket_drafts = ticket_generator.generate_tickets_bulk(tickets, num_of_tickets=3)
+    ticket_drafts = ticket_generator.generate_tickets_bulk(tickets, num_of_tickets=1)
     ticket_drafts = [{**t, "is_deleted": False} for t in ticket_drafts]
 
-    # Store ticket drafts to Mongo for review / downstream processing
     push_to_mongo(
         pd.DataFrame(ticket_drafts),
         mongo_uri=MONGO_URI,
