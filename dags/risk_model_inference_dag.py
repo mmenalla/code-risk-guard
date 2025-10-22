@@ -2,7 +2,7 @@ from datetime import datetime
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 
-from src.data.save_incremental_labeled_data import push_to_mongo, log_model_predictions
+from src.data.save_incremental_labeled_data import push_to_mongo, log_model_predictions, get_latest_model_from_metrics
 from src.data.github_client import GitHubDataCollector
 from src.data.feature_engineering import FeatureEngineer
 from src.models.predict import RiskPredictor
@@ -72,10 +72,11 @@ def predict_risk(**context):
     if not models:
         raise FileNotFoundError("No trained model versions found in models directory!")
 
-    latest_model_path = max(models, key=lambda p: int(p.stem.split("_v")[-1]))
-    logger.info(f"Using latest model: {latest_model_path.name}")
+    # latest_model_path = max(models, key=lambda p: int(p.stem.split("_v")[-1]))
+    latest_model = get_latest_model_from_metrics("xgboost_risk_model")
+    logger.info(f"Using latest model from metrics: {latest_model.name}")
 
-    predictor = RiskPredictor(model_path=str(latest_model_path))
+    predictor = RiskPredictor(model_path=str(latest_model))
     predictions_df = predictor.predict(feature_df)
 
     logger.info(
@@ -92,7 +93,8 @@ def predict_risk(**context):
     id_mapping = log_model_predictions(
         predictions_df=predictions_df,
         feature_df=feature_df,
-        model_name=latest_model_path.stem
+        repo_name=feature_df['repo_name'].iloc[0],
+        model_name=latest_model.stem
     )
     context['ti'].xcom_push(key='prediction_id_mapping', value=id_mapping)
 
@@ -109,7 +111,7 @@ def generate_jira_tickets(**context):
     prediction_id_mapping = context['ti'].xcom_pull(key='prediction_id_mapping', default={})
 
     predictions_df = pd.read_parquet(predictions_path)
-    high_risk_df = predictions_df[predictions_df['risk_score'] >= 0.5]
+    high_risk_df = predictions_df[predictions_df['risk_score'] >= 0.2]
     logger.info(f"Identified {len(high_risk_df)} high-risk PRs for potential tickets.")
 
     if high_risk_df.empty:
@@ -140,7 +142,7 @@ def generate_jira_tickets(**context):
         })
 
     logger.info(f"Generating LLM-based Jira ticket drafts for {len(tickets)} high-risk modules...")
-    ticket_drafts = ticket_generator.generate_tickets_bulk(tickets, num_of_tickets=1)
+    ticket_drafts = ticket_generator.generate_tickets_bulk(tickets, num_of_tickets=3)
     ticket_drafts = [{**t, "is_deleted": False} for t in ticket_drafts]
 
     push_to_mongo(

@@ -29,6 +29,7 @@ class FeatureEngineer:
 
         # Features
         df['bug_ratio'] = df['bug_prs'] / df['prs']
+        # df['bug_ratio'] = df['prs']-1 / df['prs']
         df['churn_per_pr'] = df['churn'] / df['prs']
         df['lines_per_pr'] = (df['lines_added'] + df['lines_removed']) / df['prs']
         df['lines_per_author'] = (df['lines_added'] + df['lines_removed']) / df['unique_authors']

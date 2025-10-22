@@ -19,7 +19,18 @@ class LabelCreator:
         df['prs'] = df['prs'].replace(0, 1)
 
         # Label
-        df['needs_maintenance'] = ((df['bug_ratio'] >= self.bug_threshold) |
-                                   (df['churn_per_pr'] >= self.churn_threshold)).astype(int)
+        # df['needs_maintenance'] = ((df['bug_ratio'] >= self.bug_threshold) |
+        #                            (df['churn_per_pr'] >= self.churn_threshold)).astype(int)
+        # Normalize bug_ratio and churn_per_pr to 0–1 range, then average
+        df["bug_score"] = df["bug_ratio"].clip(0, 1)
+        df["churn_score"] = (df["churn_per_pr"] / df["churn_per_pr"].max()).clip(0, 1)
 
-        return df
+        # Combine the two metrics to form a continuous "maintenance need" score
+        df["needs_maintenance"] = 0.5 * df["bug_score"] + 0.5 * df["churn_score"]
+        df["risk_category"] = pd.cut(
+            df["needs_maintenance"],
+            bins=[0, 0.25, 0.5, 0.75, 1.0],
+            labels=["no-risk", "low-risk", "medium-risk", "high-risk"]
+        )
+
+        return df.drop(columns=["bug_score", "churn_score"])

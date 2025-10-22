@@ -1,6 +1,8 @@
 import pandas as pd
 from pymongo import MongoClient
 import logging
+from pathlib import Path
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -93,11 +95,9 @@ def log_model_metrics(metrics: dict, model_name: str = "xgboost_risk_model",
 
     record = {
         "model_name": model_name,
-        "accuracy": float(metrics.get("accuracy")),
-        "tn": int(metrics.get("tn")),
-        "fp": int(metrics.get("fp")),
-        "fn": int(metrics.get("fn")),
-        "tp": int(metrics.get("tp")),
+        "mae": float(metrics.get("mae")),
+        "mse": float(metrics.get("mse")),
+        "r2": float(metrics.get("r2")),
         "timestamp": datetime.utcnow()
     }
 
@@ -108,6 +108,7 @@ def log_model_metrics(metrics: dict, model_name: str = "xgboost_risk_model",
 def log_model_predictions(
     predictions_df: pd.DataFrame,
     feature_df: pd.DataFrame,
+    repo_name: str,
     model_name: str,
     mongo_uri: str = "mongodb://admin:admin@mongo:27017/risk_model_db?authSource=admin",
     db_name: str = "risk_model_db",
@@ -125,7 +126,7 @@ def log_model_predictions(
     collection = db[collection_name]
 
     merged = feature_df.merge(
-        predictions_df[['module', 'risk_score', 'needs_maintenance']],
+        predictions_df[['module', 'risk_score']],
         on='module',
         how='inner'
     )
@@ -134,14 +135,15 @@ def log_model_predictions(
     for _, row in merged.iterrows():
         features = {
             k: v for k, v in row.items()
-            if k not in ['module', 'risk_score', 'needs_maintenance']
+            if k not in ['module', 'risk_score']
         }
         record = {
             "model_name": model_name,
+            "repo_name": repo_name,
             "module": row['module'],
             "features": features,
             "predicted_risk": float(row['risk_score']),
-            "needs_maintenance": int(row['needs_maintenance']),
+            # "needs_maintenance": int(row['needs_maintenance']),
             "created_at": datetime.utcnow(),
             "source": "model_inference",
         }
@@ -193,3 +195,45 @@ def log_human_feedback(
 
     collection.insert_one(record)
     logging.info(f"✅ Logged feedback for {module} by {user_id} (pred={predicted_risk:.3f}, manager={manager_risk:.3f})")
+
+
+# def get_latest_model(model_dir: Path, base_name: str, ext=".pkl") -> Path:
+#     pattern = re.compile(rf"{re.escape(base_name)}(_v\d+)*{re.escape(ext)}")
+#     candidates = [p for p in model_dir.glob(f"{base_name}_v*{ext}") if pattern.fullmatch(p.name)]
+#
+#     def version_tuple(p: Path):
+#         # Extract all numbers after _v and return as tuple
+#         nums = [int(x) for x in re.findall(r"_v(\d+)", p.stem)]
+#         return tuple(nums)
+#
+#     if not candidates:
+#         return None
+#     latest = max(candidates, key=version_tuple)
+#     return latest
+
+from pymongo import MongoClient
+from pathlib import Path
+
+MONGO_URI = "mongodb://admin:admin@mongo:27017/risk_model_db?authSource=admin"
+MODEL_METRICS_COLLECTION = "model_metrics"
+MODEL_DIR = Path("dags/src/models/artifacts")
+
+def get_latest_model_from_metrics(base_name: str, ext=".pkl") -> Path:
+    """Get the latest model based on the latest entry in model_metrics table."""
+    client = MongoClient(MONGO_URI)
+    db = client.get_default_database()
+    coll = db[MODEL_METRICS_COLLECTION]
+
+    doc = coll.find({"model_name": {"$regex": f"^{base_name}"}}).sort("timestamp", -1).limit(1)
+    latest = next(doc, None)
+
+    if not latest:
+        return None
+
+    model_name = latest["model_name"]
+    model_path = MODEL_DIR / f"{model_name}{ext}"
+    if not model_path.exists():
+        raise FileNotFoundError(f"Model {model_name} found in metrics but file does not exist: {model_path}")
+
+    return model_path
+
