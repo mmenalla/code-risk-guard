@@ -171,6 +171,8 @@ with tab2:
             avg_risk = sum(valid_scores) / len(valid_scores) if valid_scores else 0.0
             latest_created = max((p.get("created_at") for p in preds if p.get("created_at")), default=None)
             header_extra = f"Avg Risk: {avg_risk:.2f}"
+            if avg_risk >= 0.7:
+                header_extra = f":red[Avg Risk: {avg_risk:.2f}]"
             if latest_created and hasattr(latest_created, 'strftime'):
                 header_extra += f" | Latest: {latest_created.strftime('%Y-%m-%d %H:%M:%S')}"
             with st.expander(f"📁 Module: {group_key} — {header_extra}", expanded=False):
@@ -185,22 +187,28 @@ with tab2:
                     # --- Risk styling ---
                     def risk_style(val):
                         if not isinstance(val, (int, float)):
-                            return ("⚪", "#E0E0E0", "#000")
+                            return ("❔", "#E0E0E0", "#000", "UNKNOWN")
                         if val <= 0.3:
-                            return ("🟡", "#FFF59D", "#000")
+                            return ("✅", "#A5D6A7", "#000", "LOW")  # low risk green (changed icon)
                         if val <= 0.6:
-                            return ("🟠", "#FFB74D", "#000")
-                        return ("🔴", "#E57373", "#fff")
-                    risk_icon, risk_bg, risk_fg = risk_style(risk_score)
+                            return ("⚠️", "#FFEB99", "#000", "MEDIUM")  # medium risk yellow
+                        return ("❗", "#EF9A9A", "#000", "HIGH")  # high risk red
+                    icon, pill_bg, pill_fg, risk_level = risk_style(risk_score)
                     model_name = pred.get("model_name", "unknown_model")
                     created_at = pred.get("created_at")
                     created_str = created_at.strftime('%Y-%m-%d %H:%M:%S') if (created_at and hasattr(created_at, 'strftime')) else "N/A"
                     color = "#fff3cd" if status == "updated" else "#ffffff"
-                    # Use icon in expander label for quick glance
-                    with st.expander(f"{risk_icon} {file_name} — Risk {risk_score_display} | Model {model_name} | {created_str}", expanded=False):
+                    # Use icon & level in expander label for quick glance
+                    with st.expander(f"{icon} {file_name} — {risk_level} {risk_score_display} | Model {model_name} | {created_str}", expanded=False):
+                        # Visual bar (simple CSS div) representing risk proportion
+                        bar_html = f"""
+                        <div style='background:#eee; border-radius:6px; height:10px; position:relative; margin-top:4px;'>
+                            <div style='background:{pill_bg}; width:{min(max(risk_score or 0,0),1)*100:.1f}%; height:100%; border-radius:6px;'></div>
+                        </div>
+                        """
                         st.markdown(
                             f"""
-                            <div style=\"background-color:{color}; padding:10px; border-radius:6px;\">\n                            <strong>Path:</strong> {full_module}<br>\n                            <strong>Model:</strong> {model_name}<br>\n                            <strong>Risk:</strong> <span style=\"background-color:{risk_bg}; color:{risk_fg}; padding:4px 10px; border-radius:14px; font-weight:600;\">{risk_score_display}</span><br>\n                            <strong>Timestamp:</strong> {created_str}<br>\n                        </div>\n                        """,
+                            <div style=\"background-color:{color}; padding:10px; border-radius:6px;\">\n                            <strong>Path:</strong> {full_module}<br>\n                            <strong>Model:</strong> {model_name}<br>\n                            <strong>Risk:</strong> <span style=\"background-color:{pill_bg}; color:{pill_fg}; padding:4px 10px; border-radius:14px; font-weight:600;\">{risk_level} {risk_score_display}</span><br>\n                            <strong>Timestamp:</strong> {created_str}<br>\n                            {bar_html}\n                            </div>\n                            """,
                             unsafe_allow_html=True,
                         )
                         col_score, col_button = st.columns([3, 1])
