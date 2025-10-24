@@ -104,6 +104,10 @@ def predict_risk(**context):
 
 def generate_jira_tickets(**context):
     """Generate AI-based Jira tickets for high-risk modules."""
+    if not Config.GENERATE_TICKETS:
+        logger.info("Ticket generation is disabled (GENERATE_TICKETS=False). Skipping ticket generation.")
+        return
+
     predictions_path = context['ti'].xcom_pull(key='predictions_path')
     if not predictions_path or not os.path.exists(predictions_path):
         raise FileNotFoundError("Missing predictions file for Jira ticket generation.")

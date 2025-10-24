@@ -35,5 +35,8 @@ class Config:
     SINCE_DAYS = int(os.getenv("SINCE_DAYS", "150"))
     MAX_PRS = int(os.getenv("MAX_PRS", "50"))
 
+    # Ticket Generation
+    GENERATE_TICKETS = os.getenv("GENERATE_TICKETS", "True").lower() in ("true", "1", "yes")
+
     # LLM
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
