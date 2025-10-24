@@ -26,10 +26,9 @@ REPO = os.getenv("GITHUB_REPO")
 
 def fetch_latest_github_data(**context):
     """Fetch latest PRs using GitHub search API (merged in last N days)."""
-    days_back = 60
-    logger.info(f"Fetching PRs merged in the last {days_back} days...")
+    logger.info(f"Fetching PRs merged in the last {Config.SINCE_DAYS} days...")
     collector = GitHubDataCollector()
-    raw_df = collector.fetch_pr_data_for_repo(repo_name=REPO, since_days=days_back)
+    raw_df = collector.fetch_pr_data_for_repo(repo_name=REPO, since_days=Config.SINCE_DAYS)
 
     if raw_df.empty:
         logger.warning("No PRs fetched from GitHub.")

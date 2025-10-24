@@ -31,5 +31,9 @@ class Config:
     # Model
     MODEL_NAME = os.getenv("MODEL_NAME", "xgboost_risk_model.json")
 
+    # GitHub Data Collection
+    SINCE_DAYS = int(os.getenv("SINCE_DAYS", "150"))
+    MAX_PRS = int(os.getenv("MAX_PRS", "50"))
+
     # LLM
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")

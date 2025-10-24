@@ -32,7 +32,7 @@ class RiskModelTrainer:
         df = df.copy()
         feature_cols = feature_cols or [
             c for c in df.columns
-            if c not in ['module', 'needs_maintenance', 'repo_name', 'created_at', '_id', 'risk_category']
+            if c not in ['module', 'needs_maintenance', 'repo_name', 'created_at', '_id', 'risk_category', 'filename']
         ]
 
         X = df[feature_cols]
