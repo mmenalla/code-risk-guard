@@ -1,4 +1,5 @@
 import base64
+import os
 
 from github import Github, Auth
 from collections import defaultdict
@@ -62,6 +63,7 @@ class GitHubDataCollector:
             for f in pr.get_files():
                 module = self.module_from_path(f.filename)
                 touched_modules.add(module)
+                module_stats[module]['filename'] = os.path.basename(f.filename)
                 module_stats[module]['lines_added'] += f.additions
                 module_stats[module]['lines_removed'] += f.deletions
                 module_stats[module]['churn'] += f.additions + f.deletions
@@ -80,6 +82,7 @@ class GitHubDataCollector:
         for module, stats in module_stats.items():
             rows.append({
                 "module": module,
+                "filename": module_stats[module]['filename'],
                 "lines_added": stats["lines_added"],
                 "lines_removed": stats["lines_removed"],
                 "prs": stats["prs"],
