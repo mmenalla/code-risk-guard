@@ -107,7 +107,6 @@ with DAG(
         # Evaluate and log metrics
         metrics = trainer.evaluate(X_test, y_test, model_name)
         logging.info(f"Fine-tuning complete. Model saved at {model_name}")
-        log_model_metrics(metrics, model_name=model_name.split("/")[-1].rsplit(".", 1)[0])
         context['ti'].xcom_push(key='finetuned_model_path', value=model_name)
 
     t1 = PythonOperator(

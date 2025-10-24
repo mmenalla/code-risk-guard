@@ -141,6 +141,7 @@ def generate_jira_tickets(**context):
             "module": row["module"],
             "risk_score": float(row["risk_score"]),
             "prediction_id": str(prediction_id) if prediction_id else None,
+            "repo_name": REPO,
             "context": context_data,
         })
 

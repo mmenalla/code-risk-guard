@@ -110,10 +110,10 @@ with tab1:
                         # --- Log manager feedback ---
                         log_human_feedback(
                             module=ticket["module"],
-                            repo_name=ticket.get(Config().GITHUB_REPO, "unknown_repo"),
+                            repo_name=ticket.get("repo_name", Config.GITHUB_REPO),
                             predicted_risk=ticket["risk_score"],
                             manager_risk=new_score,
-                            prediction_id=ticket.get("prediction_id"),
+                            prediction_id=str(ticket.get("prediction_id")) if ticket.get("prediction_id") else None,
                             user_id=os.getenv("CURRENT_USER", "manager_ui"),
                         )
 
@@ -154,10 +154,10 @@ with tab1:
                         st.warning("🗑️ Ticket marked as deleted.")
                         log_human_feedback(
                             module=ticket["module"],
-                            repo_name=ticket.get(Config().GITHUB_REPO, "unknown_repo"),
+                            repo_name=ticket.get("repo_name", Config.GITHUB_REPO),
                             predicted_risk=ticket["risk_score"],
                             manager_risk=0.0,  # Deleted ticket treated as risk 0
-                            prediction_id=ticket.get("prediction_id"),
+                            prediction_id=str(ticket.get("prediction_id")) if ticket.get("prediction_id") else None,
                             user_id=os.getenv("CURRENT_USER", "manager_ui"),
                         )
 
@@ -221,10 +221,10 @@ with tab2:
                                 # Log human feedback
                                 log_human_feedback(
                                     module=pred.get("module"),
-                                    repo_name=pred.get(Config().GITHUB_REPO, "unknown_repo"),
+                                    repo_name=pred.get("repo_name", Config.GITHUB_REPO),
                                     predicted_risk=pred.get("predicted_risk", 0.0),
                                     manager_risk=new_score,
-                                    prediction_id=pred.get("prediction_id"),
+                                    prediction_id=str(pred.get("_id")),
                                     user_id=os.getenv("CURRENT_USER", "manager_ui"),
                                 )
 

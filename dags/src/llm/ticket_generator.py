@@ -63,5 +63,7 @@ class JiraTicketGenerator:
         for mod in sorted_modules:
             ticket = self.generate_ticket(mod['module'], mod['risk_score'], mod.get('context', {}))
             ticket['prediction_id'] = mod['prediction_id']
+            if 'repo_name' in mod:
+                ticket['repo_name'] = mod['repo_name']
             tickets.append(ticket)
         return tickets
