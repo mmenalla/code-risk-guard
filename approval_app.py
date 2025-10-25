@@ -170,9 +170,31 @@ with tab2:
     if not predictions:
         st.info("✅ No predictions found.")
     else:
-        # --- Statistics Summary ---
+        # Fetch latest risk scores from risk_feedback table
+        feedback_collection = client[DB_NAME]["risk_feedback"]
+        
+        # Merge feedback data with predictions
+        for pred in predictions:
+            pred_id = str(pred.get("_id"))
+            # Get the most recent feedback for this prediction
+            latest_feedback = feedback_collection.find_one(
+                {"prediction_id": pred_id},
+                sort=[("created_at", -1)]
+            )
+            if latest_feedback:
+                # Use the updated risk score from feedback
+                pred["current_risk"] = latest_feedback.get("manager_risk")
+                pred["has_feedback"] = True
+                pred["original_risk"] = pred.get("predicted_risk")
+            else:
+                # No feedback yet, use original prediction
+                pred["current_risk"] = pred.get("predicted_risk")
+                pred["has_feedback"] = False
+                pred["original_risk"] = pred.get("predicted_risk")
+        
+        # --- Statistics Summary (using current_risk) ---
         total_files = len(predictions)
-        valid_risks = [p.get("predicted_risk") for p in predictions if isinstance(p.get("predicted_risk"), (int, float))]
+        valid_risks = [p.get("current_risk") for p in predictions if isinstance(p.get("current_risk"), (int, float))]
         avg_risk = sum(valid_risks) / len(valid_risks) if valid_risks else 0.0
         high_files = sum(1 for r in valid_risks if r >= 0.7)
         med_files = sum(1 for r in valid_risks if 0.4 <= r < 0.7)
@@ -231,7 +253,7 @@ with tab2:
         # Apply filters
         groups = {}
         for pred in predictions:
-            risk = pred.get("predicted_risk")
+            risk = pred.get("current_risk")
             if not isinstance(risk, (int, float)):
                 continue
             if risk < min_display_risk or risk > max_display_risk:
@@ -255,10 +277,10 @@ with tab2:
             if val >= 0.4: return ("#FFF9C4", "MEDIUM")
             return ("#C8E6C9", "LOW")
 
-        # Prepare module ordering
+        # Prepare module ordering (using current_risk)
         module_items = []
         for key, preds in groups.items():
-            vals = [p.get("predicted_risk", 0.0) for p in preds if isinstance(p.get("predicted_risk"), (int, float))]
+            vals = [p.get("current_risk", 0.0) for p in preds if isinstance(p.get("current_risk"), (int, float))]
             avg = sum(vals)/len(vals) if vals else 0.0
             latest_created = max((p.get("created_at") for p in preds if p.get("created_at")), default=None)
             module_items.append((key, avg, preds, latest_created))
@@ -278,9 +300,9 @@ with tab2:
 
         for group_key, avg_risk, preds, latest_created in module_items:
             avg_color, avg_level = color_for(avg_risk)
-            high_count = sum(1 for p in preds if isinstance(p.get("predicted_risk"), (int, float)) and p.get("predicted_risk") >= 0.7)
-            med_count = sum(1 for p in preds if isinstance(p.get("predicted_risk"), (int, float)) and 0.4 <= p.get("predicted_risk") < 0.7)
-            low_count = sum(1 for p in preds if isinstance(p.get("predicted_risk"), (int, float)) and p.get("predicted_risk") < 0.4)
+            high_count = sum(1 for p in preds if isinstance(p.get("current_risk"), (int, float)) and p.get("current_risk") >= 0.7)
+            med_count = sum(1 for p in preds if isinstance(p.get("current_risk"), (int, float)) and 0.4 <= p.get("current_risk") < 0.7)
+            low_count = sum(1 for p in preds if isinstance(p.get("current_risk"), (int, float)) and p.get("current_risk") < 0.4)
             bar_width = f"{avg_risk*100:.1f}%"
             progress_html = f"""
               <div style='background:#eee; height:12px; border-radius:6px; overflow:hidden; position:relative;'>
@@ -301,44 +323,64 @@ with tab2:
                 st.markdown(progress_html + badge_html, unsafe_allow_html=True)
                 st.markdown("")  # spacing
                 
-                # Sort files within module by risk descending
-                sorted_preds = sorted(preds, key=lambda p: p.get("predicted_risk", 0.0), reverse=True)
+                # Sort files within module by risk descending (using current_risk)
+                sorted_preds = sorted(preds, key=lambda p: p.get("current_risk", 0.0), reverse=True)
                 for pred in sorted_preds:
                     pred_id = str(pred["_id"])
                     status = st.session_state.pred_score_status.get(pred_id, None)
                     full_module = get_full_module(pred)
                     file_name = full_module.split('/')[-1]
-                    risk_score = pred.get("predicted_risk")
+                    
+                    # Use current_risk for display
+                    risk_score = pred.get("current_risk")
+                    original_risk = pred.get("original_risk")
+                    has_feedback = pred.get("has_feedback", False)
+                    
                     file_color, file_level = color_for(risk_score if isinstance(risk_score,(int,float)) else 0.0)
                     risk_score_display = f"{risk_score:.2f}" if isinstance(risk_score,(int,float)) else "N/A"
                     
-                    card_bg = "#e8f5e9" if status == "updated" else "#ffffff"
-                    card_border = "#4caf50" if status == "updated" else "#ddd"
-                    model_name = pred.get("model_name", "unknown_model")
+                    # Highlight if the risk has been updated
+                    card_bg = "#e8f5e9" if has_feedback else "#ffffff"
+                    card_border = "#4caf50" if has_feedback else "#ddd"
+                    model_name_raw = pred.get("model_name", "unknown_model")
+                    # Clean up model name
+                    model_name = model_name_raw.replace("_v2_v3_v2", "").replace("_v3_v2", "")
                     created_at = pred.get("created_at")
                     created_str = created_at.strftime('%Y-%m-%d %H:%M') if (created_at and hasattr(created_at,'strftime')) else "N/A"
                     
+                    # Show original vs current if different
+                    risk_change_badge = ""
+                    if has_feedback and isinstance(original_risk, (int, float)) and isinstance(risk_score, (int, float)):
+                        if abs(original_risk - risk_score) > 0.01:
+                            change = risk_score - original_risk
+                            arrow = "↑" if change > 0 else "↓"
+                            change_color = "#ff5252" if change > 0 else "#4caf50"
+                            risk_change_badge = f"<span style='background:{change_color}; color:white; padding:2px 6px; border-radius:8px; font-size:11px; margin-left:6px;'>{arrow} {abs(change):.2f}</span>"
+                    
                     with st.container():
-                        st.markdown(
-                            f"""
-                            <div style="background-color:{card_bg}; padding:14px; border-radius:10px; border:2px solid {card_border}; margin-bottom:10px;">
-                              <div style='display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;'>
-                                <div style='display:flex; align-items:center; gap:10px;'>
-                                  <span style='background:{file_color}; padding:6px 14px; border-radius:16px; font-weight:700; font-size:14px;'>{risk_score_display}</span>
-                                  <span style='font-weight:600; font-size:14px; color:#333;'>{file_name}</span>
-                                </div>
-                                <div style='display:flex; gap:8px; font-size:11px; color:#666;'>
-                                  <span>📦 {model_name}</span>
-                                  <span>⏰ {created_str}</span>
-                                </div>
-                              </div>
-                              <div style='margin-top:8px; font-size:12px; color:#666;'>
-                                <strong>Path:</strong> <code style='background:#f5f5f5; padding:2px 6px; border-radius:4px;'>{full_module}</code>
-                              </div>
-                            </div>
-                            """,
-                            unsafe_allow_html=True
-                        )
+                        # Use columns for better layout instead of HTML
+                        header_col1, header_col2 = st.columns([2, 2])
+                        
+                        with header_col1:
+                            # Risk score badge and filename
+                            badge_col, name_col = st.columns([1, 4])
+                            with badge_col:
+                                st.markdown(f"<div style='background:{file_color}; padding:8px; border-radius:16px; font-weight:700; text-align:center;'>{risk_score_display}</div>", unsafe_allow_html=True)
+                            with name_col:
+                                display_name = f"**{file_name}**"
+                                if risk_change_badge:
+                                    st.markdown(risk_change_badge + " " + display_name, unsafe_allow_html=True)
+                                else:
+                                    st.markdown(display_name)
+                                if has_feedback:
+                                    st.markdown("<span style='background:#2196F3; color:white; padding:2px 6px; border-radius:8px; font-size:10px;'>UPDATED</span>", unsafe_allow_html=True)
+                        
+                        with header_col2:
+                            st.caption(f"**Model:** {model_name}")
+                            st.caption(f"**Date:** {created_str}")
+                            st.caption(f"**Path:** `{full_module}`")
+                        
+                        
                         
                         # Action row
                         col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
@@ -346,7 +388,7 @@ with tab2:
                             new_score = st.number_input(
                                 "Adjust Risk Score",
                                 key=f"pred_risk_{pred_id}",
-                                value=float(pred.get("predicted_risk") or 0.0),
+                                value=float(pred.get("current_risk") or 0.0),
                                 step=0.01,
                                 min_value=0.0,
                                 max_value=1.0,
@@ -358,12 +400,11 @@ with tab2:
                                 log_human_feedback(
                                     module=full_module,
                                     repo_name=pred.get("repo_name") or pred.get("features", {}).get("repo_name") or Config.GITHUB_REPO,
-                                    predicted_risk=pred.get("predicted_risk", 0.0),
+                                    predicted_risk=pred.get("original_risk", 0.0),
                                     manager_risk=new_score,
                                     prediction_id=str(pred.get("_id")),
                                     user_id=os.getenv("CURRENT_USER", "manager_ui"),
                                 )
-                                pred["predicted_risk"] = new_score
                                 st.session_state.pred_score_status[pred_id] = "updated"
                                 st.success(f"✅ Updated to {new_score:.2f}")
                                 st.rerun()
@@ -383,12 +424,11 @@ with tab2:
                                     log_human_feedback(
                                         module=full_module,
                                         repo_name=pred.get("repo_name") or pred.get("features", {}).get("repo_name") or Config.GITHUB_REPO,
-                                        predicted_risk=pred.get("predicted_risk", 0.0),
+                                        predicted_risk=pred.get("original_risk", 0.0),
                                         manager_risk=new_val,
                                         prediction_id=str(pred.get("_id")),
                                         user_id=os.getenv("CURRENT_USER", "manager_ui"),
                                     )
-                                    pred["predicted_risk"] = new_val
                                     st.session_state.pred_score_status[pred_id] = "updated"
                                     st.rerun()
                                 
@@ -397,12 +437,11 @@ with tab2:
                                     log_human_feedback(
                                         module=full_module,
                                         repo_name=pred.get("repo_name") or pred.get("features", {}).get("repo_name") or Config.GITHUB_REPO,
-                                        predicted_risk=pred.get("predicted_risk", 0.0),
+                                        predicted_risk=pred.get("original_risk", 0.0),
                                         manager_risk=new_val,
                                         prediction_id=str(pred.get("_id")),
                                         user_id=os.getenv("CURRENT_USER", "manager_ui"),
                                     )
-                                    pred["predicted_risk"] = new_val
                                     st.session_state.pred_score_status[pred_id] = "updated"
                                     st.rerun()
                                 
@@ -411,12 +450,11 @@ with tab2:
                                     log_human_feedback(
                                         module=full_module,
                                         repo_name=pred.get("repo_name") or pred.get("features", {}).get("repo_name") or Config.GITHUB_REPO,
-                                        predicted_risk=pred.get("predicted_risk", 0.0),
+                                        predicted_risk=pred.get("original_risk", 0.0),
                                         manager_risk=new_val,
                                         prediction_id=str(pred.get("_id")),
                                         user_id=os.getenv("CURRENT_USER", "manager_ui"),
                                     )
-                                    pred["predicted_risk"] = new_val
                                     st.session_state.pred_score_status[pred_id] = "updated"
                                     st.rerun()
                                 
@@ -425,12 +463,11 @@ with tab2:
                                     log_human_feedback(
                                         module=full_module,
                                         repo_name=pred.get("repo_name") or pred.get("features", {}).get("repo_name") or Config.GITHUB_REPO,
-                                        predicted_risk=pred.get("predicted_risk", 0.0),
+                                        predicted_risk=pred.get("original_risk", 0.0),
                                         manager_risk=new_val,
                                         prediction_id=str(pred.get("_id")),
                                         user_id=os.getenv("CURRENT_USER", "manager_ui"),
                                     )
-                                    pred["predicted_risk"] = new_val
                                     st.session_state.pred_score_status[pred_id] = "updated"
                                     st.rerun()
                                 
@@ -439,15 +476,14 @@ with tab2:
                                     log_human_feedback(
                                         module=full_module,
                                         repo_name=pred.get("repo_name") or pred.get("features", {}).get("repo_name") or Config.GITHUB_REPO,
-                                        predicted_risk=pred.get("predicted_risk", 0.0),
+                                        predicted_risk=pred.get("original_risk", 0.0),
                                         manager_risk=new_val,
                                         prediction_id=str(pred.get("_id")),
                                         user_id=os.getenv("CURRENT_USER", "manager_ui"),
                                     )
-                                    pred["predicted_risk"] = new_val
                                     st.session_state.pred_score_status[pred_id] = "updated"
                                     st.rerun()
-                        
+                        st.markdown("---")
                         # Show features if toggled
                         if st.session_state.show_features.get(pred_id):
                             with st.expander("📊 Feature Details", expanded=True):
