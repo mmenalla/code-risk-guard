@@ -33,19 +33,37 @@ PREDICTIONS_COLLECTION = os.getenv("MONGO_PREDICTIONS_COLLECTION", "model_predic
 client = MongoClient(MONGO_URI)
 pred_collection = client[DB_NAME][PREDICTIONS_COLLECTION]
 
-st.set_page_config(page_title="AI Risk Model Dashboard", layout="wide")
-st.markdown("---")
+st.set_page_config(page_title="MaintAI - AI Risk Model Dashboard", layout="wide", page_icon="🤖")
 
 st.markdown(
     """
-    <div style='display: flex; justify-content: center; align-items: center;'>
-        <h1 style='text-align: center;'>MaintAI</h1>
+    <div style='background: linear-gradient(135deg, #1e88e5 0%, #1565c0 100%); 
+                padding: 30px 20px; 
+                border-radius: 15px; 
+                margin-bottom: 30px;
+                box-shadow: 0 4px 6px rgba(0,0,0,0.1);'>
+        <div style='display: flex; align-items: center; justify-content: center; gap: 15px;'>
+            <span style='font-size: 48px;'>🤖</span>
+            <h1 style='color: white; 
+                       margin: 0; 
+                       font-size: 42px; 
+                       font-weight: 700;
+                       text-shadow: 2px 2px 4px rgba(0,0,0,0.2);'>
+                MaintAI
+            </h1>
+        </div>
+        <p style='color: rgba(255,255,255,0.9); 
+                  text-align: center; 
+                  margin: 10px 0 0 0; 
+                  font-size: 16px;'>
+            AI-Powered Technical Debt Risk Management
+        </p>
     </div>
     """,
     unsafe_allow_html=True
 )
-st.markdown("---")
-tab1, tab2 = st.tabs(["Ticket Review", "Edit Risk Scores"])
+
+tab1, tab2 = st.tabs(["🎫 Ticket Review", "📊 Edit Risk Scores"])
 
 
 with tab1:
