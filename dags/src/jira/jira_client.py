@@ -22,7 +22,7 @@ class JiraClient:
 
         self.default_project = os.getenv("JIRA_PROJECT_KEY", "SCRUM")
 
-    def create_ticket(self, title: str, description: str, project_key: str = None) -> Dict:
+    def create_ticket(self, title: str, description: str, project_key: str = None, priority: str = None, labels: List[str] = None) -> Dict:
         project_key = project_key or self.default_project
 
         issue_fields = {
@@ -31,6 +31,14 @@ class JiraClient:
             "description": description.strip("**Description:** ").strip(),
             "issuetype": {"name": "Task"}  # or "Bug", "Maintenance", etc.
         }
+        
+        # Add priority if provided (e.g., "Highest", "High", "Medium", "Low", "Lowest")
+        if priority:
+            issue_fields["priority"] = {"name": priority}
+        
+        # Add labels if provided
+        if labels:
+            issue_fields["labels"] = labels
 
         issue = self.jira.issue_create(fields=issue_fields)
         return {"key": issue["key"], "url": f"{self.base_url}/browse/{issue['key']}"}

@@ -14,6 +14,16 @@ logger = logging.getLogger(__name__)
 
 
 class GitHubDataCollector:
+    # Bug-related labels to check for
+    BUG_LABELS = {'bug', 'bugfix', 'hotfix', 'regression', 'critical-bug', 'defect', 'fix'}
+    
+    # Enhanced keyword detection with confidence levels
+    BUG_KEYWORDS = {
+        'high_confidence': ['crash', 'exception', 'error', 'regression', 'broken', 'null pointer', 'memory leak'],
+        'medium_confidence': ['bug', 'bugfix', 'hotfix', 'defect'],
+        'low_confidence': ['fix', 'issue', 'problem']
+    }
+    
     def __init__(self, token: str = None):
         self.token = token or Config.GITHUB_TOKEN
         if not self.token:
@@ -23,9 +33,74 @@ class GitHubDataCollector:
 
     @staticmethod
     def module_from_path(path: str) -> str:
-        parts = path.split('/')
-        return '/'.join(parts[:2]) if len(parts) >= 2 else parts[0]
-
+        """
+        Convert file path to module identifier.
+        Returns the full path to properly identify files in nested directories.
+        """
+        # Return the full path - no truncation
+        # This ensures files like 'dags/src/models/train.py' are properly identified
+        return path
+    
+    def is_bug_fix_pr(self, pr) -> bool:
+        """
+        Determine if a PR is a bug fix using multiple signals:
+        1. PR labels (highest confidence)
+        2. Enhanced keyword detection with confidence levels
+        3. Issue references (if available)
+        
+        Returns True if PR is classified as a bug fix.
+        """
+        # Method 1: Check PR labels (most reliable)
+        try:
+            pr_labels = {label.name.lower() for label in pr.labels}
+            if self.BUG_LABELS & pr_labels:
+                logger.debug(f"PR #{pr.number} identified as bug fix via labels: {pr_labels}")
+                return True
+        except Exception as e:
+            logger.debug(f"Could not check labels for PR #{pr.number}: {e}")
+        
+        # Method 2: Enhanced keyword detection with confidence levels
+        title_body = (pr.title or '').lower() + ' ' + (pr.body or '').lower()
+        
+        # High confidence keywords - immediate match
+        if any(kw in title_body for kw in self.BUG_KEYWORDS['high_confidence']):
+            logger.debug(f"PR #{pr.number} identified as bug fix via high-confidence keywords")
+            return True
+        
+        # Medium confidence keywords - immediate match
+        if any(kw in title_body for kw in self.BUG_KEYWORDS['medium_confidence']):
+            logger.debug(f"PR #{pr.number} identified as bug fix via medium-confidence keywords")
+            return True
+        
+        # Low confidence keywords - require additional signals
+        if any(kw in title_body for kw in self.BUG_KEYWORDS['low_confidence']):
+            # Additional signals that boost confidence
+            signals = []
+            
+            # Signal: References an issue (closes #123, fixes #456, resolves #789)
+            if any(pattern in title_body for pattern in ['closes #', 'fixes #', 'resolves #', 'close #', 'fix #', 'resolve #']):
+                signals.append('issue_reference')
+            
+            # Signal: Small, focused change (likely a targeted fix) - but not documentation-only
+            try:
+                if pr.changed_files <= 3:
+                    # Exclude docs-only changes
+                    if not any(doc_word in title_body for doc_word in ['doc', 'readme', 'typo', 'comment']):
+                        signals.append('small_change')
+            except:
+                pass
+            
+            # Signal: Contains stack trace or error patterns
+            if any(pattern in title_body for pattern in ['traceback', 'stack trace', 'error:', 'exception:']):
+                signals.append('error_pattern')
+            
+            # If we have at least one additional signal, classify as bug fix
+            if signals:
+                logger.debug(f"PR #{pr.number} identified as bug fix via low-confidence keyword + signals: {signals}")
+                return True
+        
+        return False
+    
     def fetch_pr_data_for_repo(self, repo_name: str, since_days: int = 365, max_prs: int = 100) -> pd.DataFrame:
         """
         Fetch PRs for a single repo using the GitHub search API, filtering only merged PRs in the last `since_days`.
@@ -49,7 +124,8 @@ class GitHubDataCollector:
         module_stats = defaultdict(lambda: {
             "lines_added": 0, "lines_removed": 0, "prs": 0,
             "unique_authors": set(), "bug_prs": 0, "churn": 0, "created_at": None,
-            "repo_name": repo_name
+            "repo_name": repo_name, "first_seen": None, "last_modified": None,
+            "days_tracked": since_days
         })
 
         for pr_issue in prs:
@@ -68,18 +144,37 @@ class GitHubDataCollector:
                 module_stats[module]['lines_removed'] += f.deletions
                 module_stats[module]['churn'] += f.additions + f.deletions
                 module_stats[module]['created_at'] = pr.merged_at
+                
+                # Track first and last modification timestamps for temporal features
+                if module_stats[module]['first_seen'] is None or pr.merged_at < module_stats[module]['first_seen']:
+                    module_stats[module]['first_seen'] = pr.merged_at
+                if module_stats[module]['last_modified'] is None or pr.merged_at > module_stats[module]['last_modified']:
+                    module_stats[module]['last_modified'] = pr.merged_at
 
             for module in touched_modules:
                 module_stats[module]['prs'] += 1
                 module_stats[module]['unique_authors'].add(pr.user.login)
 
-            title_body = (pr.title or '') + ' ' + (pr.body or '')
-            if any(w in title_body.lower() for w in ['fix', 'bug', 'bugfix', 'hotfix']):
+            # Use enhanced bug detection
+            if self.is_bug_fix_pr(pr):
                 for module in touched_modules:
                     module_stats[module]['bug_prs'] += 1
 
         rows = []
         for module, stats in module_stats.items():
+            # Calculate temporal features
+            file_age_days = None
+            last_modified_days = None
+            
+            if stats['first_seen'] and stats['last_modified']:
+                now = datetime.datetime.utcnow()
+                # Use timezone-aware comparison if merged_at has timezone
+                if stats['first_seen'].tzinfo:
+                    now = datetime.datetime.now(datetime.timezone.utc)
+                
+                file_age_days = (now - stats['first_seen']).days
+                last_modified_days = (now - stats['last_modified']).days
+            
             rows.append({
                 "module": module,
                 "filename": module_stats[module]['filename'],
@@ -90,7 +185,10 @@ class GitHubDataCollector:
                 "bug_prs": stats["bug_prs"],
                 "churn": stats["churn"],
                 "created_at": stats["created_at"],
-                "repo_name": stats["repo_name"]
+                "repo_name": stats["repo_name"],
+                "days_tracked": stats["days_tracked"],
+                "file_age_days": file_age_days,
+                "last_modified_days": last_modified_days
             })
 
         return pd.DataFrame(rows)

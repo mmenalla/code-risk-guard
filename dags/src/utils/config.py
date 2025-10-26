@@ -37,6 +37,8 @@ class Config:
 
     # Ticket Generation
     GENERATE_TICKETS = os.getenv("GENERATE_TICKETS", "True").lower() in ("true", "1", "yes")
+    RISK_SCORE_THRESHOLD = float(os.getenv("RISK_SCORE_THRESHOLD", "0.5"))
+    NUM_TICKETS_PER_MODULE = int(os.getenv("NUM_TICKETS_PER_MODULE", "1"))
 
     # LLM
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
