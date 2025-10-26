@@ -44,10 +44,11 @@ with DAG(
         Prepare fine-tuning dataset by joining model predictions with manager feedback.
         
         Strategy:
-        1. Load predictions from model_predictions collection
-        2. Join with risk_feedback on: model_predictions._id = risk_feedback.prediction_id
-        3. Use manager_risk as ground truth where feedback exists
-        4. Train on predictions that received manager corrections
+        1. Load ALL predictions from model_predictions collection
+        2. LEFT JOIN with risk_feedback on: model_predictions._id = risk_feedback.prediction_id
+        3. Where feedback exists: use manager_risk as ground truth
+        4. Where no feedback: use original predicted_risk as ground truth
+        5. Train on the complete dataset (all predictions)
         """
         client = MongoClient(MONGO_URI)
         db = client[DB_NAME]
@@ -69,51 +70,66 @@ with DAG(
         
         logging.info(f"Loaded {len(pred_df)} predictions from {PREDICTION_COLLECTION}")
 
-        # 2. Load manager feedback
+        # 2. Load manager feedback (if any)
         feedback = list(db[FEEDBACK_COLLECTION].find({}))
         
-        if not feedback:
-            raise ValueError("No manager feedback found! Cannot fine-tune without corrections.")
-        
-        feedback_df = pd.DataFrame(feedback)
-        feedback_df = feedback_df.drop(columns=['_id'], errors='ignore')
-        
-        # Get latest feedback for each prediction_id
-        feedback_df = feedback_df.sort_values('created_at', ascending=False)
-        feedback_df = feedback_df.drop_duplicates(subset=['prediction_id'], keep='first')
-        
-        logging.info(f"Found manager feedback for {len(feedback_df)} predictions")
+        if feedback:
+            feedback_df = pd.DataFrame(feedback)
+            feedback_df = feedback_df.drop(columns=['_id'], errors='ignore')
+            
+            # Get latest feedback for each prediction_id
+            feedback_df = feedback_df.sort_values('created_at', ascending=False)
+            feedback_df = feedback_df.drop_duplicates(subset=['prediction_id'], keep='first')
+            
+            logging.info(f"Found manager feedback for {len(feedback_df)} predictions")
+        else:
+            # No feedback - create empty dataframe with correct schema
+            logging.warning("No manager feedback found! Using all predictions with original risk scores")
+            feedback_df = pd.DataFrame(columns=['prediction_id', 'manager_risk', 'created_at'])
 
-        # 3. Inner join: only predictions that received feedback
+        # 3. LEFT JOIN: keep ALL predictions, add feedback where available
         # Join on: model_predictions._id (as string) = risk_feedback.prediction_id
         train_df = pred_df.merge(
             feedback_df[['prediction_id', 'manager_risk', 'created_at']], 
             on='prediction_id', 
-            how='inner',
+            how='left',  # LEFT JOIN - keep all predictions!
             suffixes=('_pred', '_feedback')
         )
         
-        if train_df.empty:
-            raise ValueError("No matching predictions found! Check that prediction_id links are correct.")
+        logging.info(f"✅ Total predictions: {len(train_df)}")
         
-        logging.info(f"✅ Matched {len(train_df)} predictions with manager feedback")
-        logging.info(f"Columns after merge: {train_df.columns.tolist()}")
-        
-        # 4. Use manager_risk as ground truth label
-        train_df['needs_maintenance'] = train_df['manager_risk']
-        
-        # Log some statistics (handle both risk_score and predicted_risk columns)
+        # 4. Use manager_risk where available, otherwise use predicted_risk
+        # Determine which column has the predicted risk
         pred_col = 'risk_score' if 'risk_score' in train_df.columns else 'predicted_risk'
-        if pred_col in train_df.columns:
-            avg_correction = (train_df['manager_risk'] - train_df[pred_col]).abs().mean()
-            logging.info(f"Average correction magnitude: {avg_correction:.3f}")
-        else:
-            logging.warning(f"Neither 'risk_score' nor 'predicted_risk' found in columns: {train_df.columns.tolist()}")
+        
+        if pred_col not in train_df.columns:
+            raise ValueError(f"Neither 'risk_score' nor 'predicted_risk' found in columns: {train_df.columns.tolist()}")
+        
+        # Create label: manager_risk if available, else predicted_risk
+        train_df['needs_maintenance'] = train_df['manager_risk'].fillna(train_df[pred_col])
+        
+        # Track label source for statistics
+        train_df['label_source'] = train_df['manager_risk'].notna().map({True: 'manager', False: 'prediction'})
+        
+        # Log statistics
+        manager_count = (train_df['label_source'] == 'manager').sum()
+        prediction_count = (train_df['label_source'] == 'prediction').sum()
+        
+        logging.info(f"📊 Training labels breakdown:")
+        logging.info(f"   - {manager_count} from manager feedback (corrections)")
+        logging.info(f"   - {prediction_count} from original predictions (no feedback)")
+        logging.info(f"   - Total: {len(train_df)} samples")
+        
+        # Calculate correction magnitude for records that have feedback
+        if manager_count > 0:
+            corrected_records = train_df[train_df['label_source'] == 'manager'].copy()
+            avg_correction = (corrected_records['manager_risk'] - corrected_records[pred_col]).abs().mean()
+            logging.info(f"📈 Average correction magnitude (for corrected records): {avg_correction:.3f}")
         
         # 5. Prepare for training (drop metadata columns)
         drop_cols = ['module', 'repo_name', 'created_at_pred', 'created_at_feedback', 
                      'filename', 'prediction_id', 'manager_risk', 'risk_score', 'predicted_risk',
-                     'risk_category', 'user_id', 'model_version', 'model_name', 'source']
+                     'risk_category', 'user_id', 'model_version', 'model_name', 'source', 'label_source']
         train_df = train_df.drop(columns=[c for c in drop_cols if c in train_df.columns], errors='ignore')
         
         logging.info(f"Columns after dropping metadata: {train_df.columns.tolist()}")
