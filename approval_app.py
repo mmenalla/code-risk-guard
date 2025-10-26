@@ -54,7 +54,7 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-tab1, tab2 = st.tabs(["🎫 Ticket Review", "📊 Edit Risk Scores"])
+tab1, tab2, tab3 = st.tabs(["🎫 Ticket Review", "📊 Edit Risk Scores", "📈 Model Performance"])
 
 
 with tab1:
@@ -523,4 +523,438 @@ with tab2:
                         
                         st.markdown("---")
                         st.markdown("")  # spacing
-                        
+
+
+with tab3:
+    st.markdown("### 📈 Model Performance Dashboard")
+    st.markdown("Track model accuracy, correction patterns, and disagreement rates over time.")
+    
+    # Load data from MongoDB
+    feedback_collection = client[DB_NAME][FEEDBACK_COLLECTION]
+    predictions = list(pred_collection.find({}))
+    feedback_records = list(feedback_collection.find({}))
+    
+    # Get model metrics from model_metrics collection
+    metrics_collection = client[DB_NAME]["model_metrics"]
+    metrics_records = list(metrics_collection.find({}).sort("timestamp", -1))
+    
+    if not feedback_records:
+        st.info("📊 No feedback data yet. Manager corrections will appear here once you adjust risk scores.")
+    else:
+        import numpy as np
+        import pandas as pd
+        
+        # Prepare feedback dataframe
+        feedback_df = pd.DataFrame(feedback_records)
+        feedback_df['correction'] = abs(feedback_df['manager_risk'] - feedback_df['predicted_risk'])
+        feedback_df['direction'] = feedback_df['manager_risk'] - feedback_df['predicted_risk']
+        feedback_df['created_at'] = pd.to_datetime(feedback_df['created_at'])
+        
+        # ========== KEY METRICS SECTION ==========
+        st.markdown("---")
+        st.markdown("#### 🎯 Key Performance Indicators")
+        
+        col1, col2, col3, col4, col5 = st.columns(5)
+        
+        with col1:
+            total_feedback = len(feedback_df)
+            st.metric(
+                "Total Feedback",
+                total_feedback,
+                help="Number of manager corrections received"
+            )
+        
+        with col2:
+            avg_correction = feedback_df['correction'].mean()
+            st.metric(
+                "Avg Correction",
+                f"{avg_correction:.3f}",
+                delta=f"{-avg_correction:.3f}" if avg_correction < 0.3 else None,
+                delta_color="inverse",
+                help="Average absolute difference between prediction and manager correction"
+            )
+        
+        with col3:
+            mae = feedback_df['correction'].mean()
+            st.metric(
+                "MAE",
+                f"{mae:.3f}",
+                help="Mean Absolute Error - same as average correction"
+            )
+        
+        with col4:
+            rmse = np.sqrt((feedback_df['correction'] ** 2).mean())
+            st.metric(
+                "RMSE",
+                f"{rmse:.3f}",
+                help="Root Mean Squared Error - penalizes large errors more"
+            )
+        
+        with col5:
+            # Disagreement rate: feedback given / total predictions
+            # If manager gives feedback = disagreed, no feedback = agreed
+            total_predictions = len(predictions)
+            disagreement_count = len(feedback_df)
+            disagreement_rate = (disagreement_count / total_predictions * 100) if total_predictions > 0 else 0
+            agreement_count = total_predictions - disagreement_count
+            
+            st.metric(
+                "Disagreement Rate",
+                f"{disagreement_rate:.1f}%",
+                delta=f"{disagreement_count} of {total_predictions}",
+                delta_color="inverse",
+                help=f"% of predictions that received manager feedback (implicit agreement if no feedback)"
+            )
+        
+        # ========== AGREEMENT VS DISAGREEMENT ==========
+        st.markdown("---")
+        st.markdown("#### 🎯 Agreement vs Disagreement Overview")
+        st.markdown("""
+        **Logic**: If manager provides feedback = disagreement. No feedback = implicit agreement.
+        """)
+        
+        col_agree1, col_agree2, col_agree3 = st.columns(3)
+        
+        with col_agree1:
+            st.metric(
+                "✅ Agreed (No Feedback)",
+                agreement_count,
+                help="Predictions where manager didn't provide feedback = implicit agreement"
+            )
+        
+        with col_agree2:
+            st.metric(
+                "⚠️ Disagreed (Gave Feedback)",
+                disagreement_count,
+                delta=f"{disagreement_rate:.1f}%",
+                delta_color="inverse",
+                help="Predictions where manager provided corrections"
+            )
+        
+        with col_agree3:
+            agreement_rate = 100 - disagreement_rate
+            st.metric(
+                "Agreement Rate",
+                f"{agreement_rate:.1f}%",
+                help="% of predictions manager agreed with (no feedback needed)"
+            )
+        
+        # Visual breakdown
+        agree_disagree_data = pd.DataFrame({
+            'Status': ['Agreed\n(No Feedback)', 'Disagreed\n(Gave Feedback)'],
+            'Count': [agreement_count, disagreement_count]
+        })
+        
+        st.bar_chart(agree_disagree_data.set_index('Status')['Count'], use_container_width=True)
+        st.caption(f"Goal: High agreement rate (>75%) means model is accurate")
+        
+        # ========== CORRECTION DISTRIBUTION ==========
+        st.markdown("---")
+        st.markdown("#### 📊 Correction Magnitude Distribution")
+        st.markdown("For the predictions where manager disagreed, how large were the corrections?")
+        
+        col_chart1, col_chart2 = st.columns(2)
+        
+        with col_chart1:
+            # Histogram of corrections
+            bins = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 1.0]
+            labels = ['0-0.1', '0.1-0.2', '0.2-0.3', '0.3-0.4', '0.4-0.5', '0.5+']
+            feedback_df['correction_bin'] = pd.cut(feedback_df['correction'], bins=bins, labels=labels)
+            correction_counts = feedback_df['correction_bin'].value_counts().sort_index()
+            
+            st.bar_chart(correction_counts, use_container_width=True)
+            st.caption("Distribution of correction magnitudes - lower is better")
+        
+        with col_chart2:
+            # Direction of corrections
+            over_predictions = (feedback_df['direction'] < 0).sum()
+            under_predictions = (feedback_df['direction'] > 0).sum()
+            exact_match = (feedback_df['direction'] == 0).sum()
+            
+            direction_data = pd.DataFrame({
+                'Category': ['Over-predicted', 'Under-predicted', 'Exact'],
+                'Count': [over_predictions, under_predictions, exact_match]
+            })
+            
+            st.bar_chart(direction_data.set_index('Category')['Count'], use_container_width=True)
+            st.caption(f"Model bias: {over_predictions} over, {under_predictions} under, {exact_match} exact")
+        
+        # ========== CORRECTION TRENDS OVER TIME ==========
+        st.markdown("---")
+        st.markdown("#### 📉 Correction Trends Over Time")
+        
+        # Group by date
+        feedback_df['date'] = feedback_df['created_at'].dt.date
+        daily_corrections = feedback_df.groupby('date').agg({
+            'correction': ['mean', 'count', 'max']
+        }).reset_index()
+        daily_corrections.columns = ['date', 'avg_correction', 'count', 'max_correction']
+        daily_corrections = daily_corrections.set_index('date')
+        
+        col_trend1, col_trend2 = st.columns(2)
+        
+        with col_trend1:
+            st.line_chart(daily_corrections['avg_correction'], use_container_width=True)
+            st.caption("Average correction magnitude over time - should trend downward")
+        
+        with col_trend2:
+            st.line_chart(daily_corrections['count'], use_container_width=True)
+            st.caption("Number of corrections per day")
+        
+        # ========== MODEL COMPARISON ==========
+        st.markdown("---")
+        st.markdown("#### 🤖 Model Version Comparison")
+        
+        # Try to extract model version from predictions
+        pred_df = pd.DataFrame(predictions)
+        if 'model_name' in pred_df.columns and len(pred_df) > 0:
+            # Join predictions with feedback
+            pred_df['prediction_id'] = pred_df['_id'].astype(str)
+            feedback_with_model = feedback_df.merge(
+                pred_df[['prediction_id', 'model_name']],
+                left_on='prediction_id',
+                right_on='prediction_id',
+                how='left'
+            )
+            
+            if 'model_name' in feedback_with_model.columns:
+                # Count predictions per model
+                model_pred_counts = pred_df['model_name'].value_counts().to_dict()
+                
+                model_performance = feedback_with_model.groupby('model_name').agg({
+                    'correction': ['mean', 'count'],
+                    'predicted_risk': 'mean',
+                    'manager_risk': 'mean'
+                }).reset_index()
+                model_performance.columns = ['model_name', 'avg_correction', 'feedback_count', 'avg_pred_risk', 'avg_mgr_risk']
+                
+                # Add total predictions for this model
+                model_performance['total_predictions'] = model_performance['model_name'].map(model_pred_counts)
+                
+                # Disagreement rate = feedback_count / total_predictions
+                model_performance['disagreement_rate'] = (
+                    model_performance['feedback_count'] / model_performance['total_predictions'] * 100
+                ).round(1)
+                
+                # Agreement rate (implicit)
+                model_performance['agreement_count'] = model_performance['total_predictions'] - model_performance['feedback_count']
+                
+                # Reorder columns
+                model_performance = model_performance[[
+                    'model_name', 'total_predictions', 'feedback_count', 'agreement_count',
+                    'disagreement_rate', 'avg_correction', 'avg_pred_risk', 'avg_mgr_risk'
+                ]]
+                
+                st.dataframe(
+                    model_performance.sort_values('disagreement_rate'),
+                    use_container_width=True,
+                    hide_index=True
+                )
+                st.caption("Lower disagreement rate = better model (manager agrees more often)")
+        
+        # ========== TOP DISAGREEMENT FILES ==========
+        st.markdown("---")
+        st.markdown("#### ⚠️ Top Disagreement Cases")
+        st.markdown("Files where model predictions differed most from manager assessment")
+        
+        top_disagreements = feedback_df.nlargest(10, 'correction')[
+            ['module', 'predicted_risk', 'manager_risk', 'correction', 'created_at']
+        ].copy()
+        top_disagreements['created_at'] = top_disagreements['created_at'].dt.strftime('%Y-%m-%d %H:%M')
+        top_disagreements.columns = ['Module', 'Predicted', 'Manager', 'Correction', 'Date']
+        
+        st.dataframe(
+            top_disagreements,
+            use_container_width=True,
+            hide_index=True
+        )
+        
+        # ========== RISK CALIBRATION ==========
+        st.markdown("---")
+        st.markdown("#### 🎯 Risk Calibration Analysis")
+        st.markdown("How well are predicted risks aligned with manager assessments?")
+        
+        col_cal1, col_cal2 = st.columns(2)
+        
+        with col_cal1:
+            # Scatter plot data
+            scatter_data = feedback_df[['predicted_risk', 'manager_risk']].copy()
+            scatter_data.columns = ['Predicted Risk', 'Manager Risk']
+            
+            st.scatter_chart(
+                data=scatter_data,
+                x='Predicted Risk',
+                y='Manager Risk',
+                use_container_width=True
+            )
+            st.caption("Perfect calibration would be a diagonal line from (0,0) to (1,1)")
+        
+        with col_cal2:
+            # Calibration by risk bucket
+            feedback_df['pred_bucket'] = pd.cut(
+                feedback_df['predicted_risk'],
+                bins=[0, 0.25, 0.5, 0.75, 1.0],
+                labels=['Low (0-0.25)', 'Medium (0.25-0.5)', 'High (0.5-0.75)', 'Critical (0.75-1.0)']
+            )
+            
+            calibration = feedback_df.groupby('pred_bucket').agg({
+                'predicted_risk': 'mean',
+                'manager_risk': 'mean',
+                'correction': 'mean'
+            }).round(3)
+            calibration.columns = ['Avg Predicted', 'Avg Manager', 'Avg Correction']
+            
+            st.dataframe(calibration, use_container_width=True)
+            st.caption("Check if each risk bucket is well-calibrated")
+        
+        # ========== MODEL METRICS HISTORY ==========
+        if metrics_records:
+            st.markdown("---")
+            st.markdown("#### 📊 Training Metrics History")
+            st.markdown("Performance metrics from model training runs")
+            
+            metrics_df = pd.DataFrame(metrics_records)
+            metrics_df['timestamp'] = pd.to_datetime(metrics_df['timestamp'])
+            metrics_df = metrics_df.sort_values('timestamp')
+            
+            # Display recent metrics
+            recent_metrics = metrics_df.tail(10)[['model_name', 'mae', 'mse', 'r2', 'timestamp']].copy()
+            recent_metrics['timestamp'] = recent_metrics['timestamp'].dt.strftime('%Y-%m-%d %H:%M')
+            recent_metrics.columns = ['Model', 'MAE', 'MSE', 'R²', 'Timestamp']
+            
+            st.dataframe(
+                recent_metrics,
+                use_container_width=True,
+                hide_index=True
+            )
+            
+            # Plot metrics over time
+            col_metric1, col_metric2 = st.columns(2)
+            
+            with col_metric1:
+                metrics_chart = metrics_df.set_index('timestamp')[['mae', 'mse']]
+                st.line_chart(metrics_chart, use_container_width=True)
+                st.caption("MAE and MSE over time - should decrease with improvements")
+            
+            with col_metric2:
+                r2_chart = metrics_df.set_index('timestamp')[['r2']]
+                st.line_chart(r2_chart, use_container_width=True)
+                st.caption("R² score over time - higher is better (max 1.0)")
+        
+        # ========== ACTIONABLE INSIGHTS ==========
+        st.markdown("---")
+        st.markdown("#### 💡 Actionable Insights")
+        
+        insights = []
+        
+        # Insight 1: Overall accuracy
+        if avg_correction < 0.15:
+            insights.append("✅ **Excellent**: Model is highly accurate (avg correction < 0.15)")
+        elif avg_correction < 0.3:
+            insights.append("⚠️ **Good**: Model is performing well but can be improved (avg correction < 0.3)")
+        else:
+            insights.append("❌ **Needs Improvement**: Model has significant errors (avg correction > 0.3) - consider fine-tuning")
+        
+        # Insight 2: Bias detection
+        if over_predictions > under_predictions * 1.5:
+            insights.append(f"📈 **Over-prediction Bias**: Model tends to over-estimate risk ({over_predictions} vs {under_predictions})")
+        elif under_predictions > over_predictions * 1.5:
+            insights.append(f"📉 **Under-prediction Bias**: Model tends to under-estimate risk ({under_predictions} vs {over_predictions})")
+        else:
+            insights.append("⚖️ **Balanced**: Model shows no significant bias in predictions")
+        
+        # Insight 3: Disagreement rate (updated logic)
+        total_predictions = len(predictions)
+        if disagreement_rate > 50:
+            insights.append(f"⚠️ **High Disagreement**: {disagreement_rate:.0f}% of predictions needed correction ({disagreement_count}/{total_predictions}) - recommend retraining")
+        elif disagreement_rate > 25:
+            insights.append(f"📊 **Moderate Disagreement**: {disagreement_rate:.0f}% needed correction ({disagreement_count}/{total_predictions}) - model learning but needs more feedback")
+        elif disagreement_rate > 10:
+            insights.append(f"✅ **Good Agreement**: Only {disagreement_rate:.0f}% needed correction ({disagreement_count}/{total_predictions}) - model is well-calibrated")
+        else:
+            insights.append(f"🎯 **Excellent Agreement**: Only {disagreement_rate:.0f}% needed correction ({disagreement_count}/{total_predictions}) - manager agrees with most predictions")
+        
+        # Insight 4: Data sufficiency
+        if total_feedback < 10:
+            insights.append(f"📝 **Need More Data**: Only {total_feedback} corrections - collect at least 20-30 for meaningful fine-tuning")
+        elif total_feedback < 30:
+            insights.append(f"📊 **Good Sample**: {total_feedback} corrections - sufficient for initial fine-tuning")
+        else:
+            insights.append(f"✅ **Excellent Dataset**: {total_feedback} corrections - great for model improvement")
+        
+        # Insight 5: Trend analysis
+        if len(daily_corrections) >= 3:
+            recent_avg = daily_corrections.tail(3)['avg_correction'].mean()
+            older_avg = daily_corrections.head(max(1, len(daily_corrections) - 3))['avg_correction'].mean()
+            if recent_avg < older_avg * 0.8:
+                insights.append("📈 **Improving**: Recent corrections are smaller - model is getting better over time")
+            elif recent_avg > older_avg * 1.2:
+                insights.append("📉 **Degrading**: Recent corrections are larger - model may need retraining")
+        
+        for insight in insights:
+            st.markdown(insight)
+        
+        # ========== RECOMMENDATIONS ==========
+        st.markdown("---")
+        st.markdown("#### 🎯 Recommendations")
+        
+        recommendations = []
+        
+        if avg_correction > 0.3:
+            recommendations.append("1. **Trigger Fine-tuning**: Run `airflow dags trigger risk_model_finetune_dag` to improve model with feedback")
+        
+        if disagreement_rate > 40:
+            recommendations.append("2. **Review High-disagreement Cases**: Focus on modules with corrections > 0.3 to understand patterns")
+        
+        if total_feedback >= 20 and avg_correction > 0.25:
+            recommendations.append("3. **Consider Feature Engineering**: High error rate with sufficient data suggests missing features")
+        
+        if over_predictions > under_predictions * 2:
+            recommendations.append("4. **Adjust Model Threshold**: Model is too conservative - consider lowering risk thresholds")
+        elif under_predictions > over_predictions * 2:
+            recommendations.append("4. **Adjust Model Threshold**: Model is too lenient - consider raising risk thresholds")
+        
+        if total_feedback < 20:
+            recommendations.append("5. **Continue Collecting Feedback**: Review more predictions to build a robust training dataset")
+        
+        if not recommendations:
+            recommendations.append("✅ **Keep Monitoring**: Model is performing well - continue regular reviews")
+        
+        for rec in recommendations:
+            st.markdown(rec)
+        
+        # ========== EXPORT DATA ==========
+        st.markdown("---")
+        st.markdown("#### 💾 Export Data")
+        
+        col_export1, col_export2 = st.columns(2)
+        
+        with col_export1:
+            # Export feedback data
+            feedback_export = feedback_df[['module', 'predicted_risk', 'manager_risk', 'correction', 'created_at']].copy()
+            feedback_export['created_at'] = feedback_export['created_at'].dt.strftime('%Y-%m-%d %H:%M:%S')
+            csv_feedback = feedback_export.to_csv(index=False)
+            
+            st.download_button(
+                label="📥 Download Feedback Data (CSV)",
+                data=csv_feedback,
+                file_name=f"model_feedback_{datetime.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+        
+        with col_export2:
+            # Export metrics data
+            if metrics_records:
+                metrics_export = metrics_df[['model_name', 'mae', 'mse', 'r2', 'timestamp']].copy()
+                metrics_export['timestamp'] = metrics_export['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
+                csv_metrics = metrics_export.to_csv(index=False)
+                
+                st.download_button(
+                    label="📥 Download Metrics History (CSV)",
+                    data=csv_metrics,
+                    file_name=f"model_metrics_{datetime.now().strftime('%Y%m%d')}.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+

@@ -40,49 +40,103 @@ with DAG(
 ) as dag:
 
     def prepare_finetune_dataset(**context):
-        """Pull predictions and human feedback, join on prediction_id"""
+        """
+        Prepare fine-tuning dataset by joining model predictions with manager feedback.
+        
+        Strategy:
+        1. Load predictions from model_predictions collection
+        2. Join with risk_feedback on: model_predictions._id = risk_feedback.prediction_id
+        3. Use manager_risk as ground truth where feedback exists
+        4. Train on predictions that received manager corrections
+        """
         client = MongoClient(MONGO_URI)
         db = client[DB_NAME]
 
-        # Load predictions
+        # 1. Load model predictions
         predictions = list(db[PREDICTION_COLLECTION].find({}))
         if not predictions:
-            raise ValueError("No predictions found in MongoDB!")
+            raise ValueError("No predictions found in model_predictions collection!")
+        
         pred_df = pd.DataFrame(predictions)
-        features_df = pd.json_normalize(pred_df['features'])
-        pred_df = pd.concat([pred_df.reset_index(drop=True), features_df], axis=1)
-        pred_df.rename(columns={'_id': 'prediction_id'}, inplace=True)
-        pred_df['prediction_id'] = pred_df['prediction_id'].astype(str)
+        pred_df['prediction_id'] = pred_df['_id'].astype(str)  # Convert ObjectId to string for join
+        pred_df = pred_df.drop(columns=['_id'], errors='ignore')
+        
+        # Expand nested 'features' dictionary into separate columns
+        if 'features' in pred_df.columns:
+            features_df = pd.json_normalize(pred_df['features'])
+            pred_df = pd.concat([pred_df.drop(columns=['features']), features_df], axis=1)
+            logging.info(f"Expanded features into {len(features_df.columns)} columns")
+        
+        logging.info(f"Loaded {len(pred_df)} predictions from {PREDICTION_COLLECTION}")
 
-        # Load feedback
+        # 2. Load manager feedback
         feedback = list(db[FEEDBACK_COLLECTION].find({}))
+        
         if not feedback:
-            raise ValueError("No human feedback found in MongoDB!")
+            raise ValueError("No manager feedback found! Cannot fine-tune without corrections.")
+        
         feedback_df = pd.DataFrame(feedback)
-        feedback_df['prediction_id'] = feedback_df['prediction_id'].astype(str)
+        feedback_df = feedback_df.drop(columns=['_id'], errors='ignore')
+        
+        # Get latest feedback for each prediction_id
+        feedback_df = feedback_df.sort_values('created_at', ascending=False)
+        feedback_df = feedback_df.drop_duplicates(subset=['prediction_id'], keep='first')
+        
+        logging.info(f"Found manager feedback for {len(feedback_df)} predictions")
 
-        # Mark deleted feedback as 0 risk
-        # if 'is_deleted' in feedback_df.columns:
-        #     feedback_df.loc[feedback_df['is_deleted'], 'manager_risk'] = 0.0
-
-        # Join
-        merged_df = pred_df.merge(
-            feedback_df[['prediction_id', 'manager_risk']],
-            on='prediction_id',
-            how='inner'
+        # 3. Inner join: only predictions that received feedback
+        # Join on: model_predictions._id (as string) = risk_feedback.prediction_id
+        train_df = pred_df.merge(
+            feedback_df[['prediction_id', 'manager_risk', 'created_at']], 
+            on='prediction_id', 
+            how='inner',
+            suffixes=('_pred', '_feedback')
         )
-
-        # Prepare training dataset
-        drop_cols = ['_id', 'model_name', 'module', 'features', 'repo_name', 'created_at', 'source', 'needs_maintenance', 'prediction_id', 'predicted_risk']
-        train_df = merged_df.drop(columns=[c for c in drop_cols if c in merged_df.columns])
-        train_df.rename(columns={'manager_risk': 'needs_maintenance'}, inplace=True)
-        cols = [c for c in train_df.columns if c != 'needs_maintenance'] + ['needs_maintenance']
-        train_df = train_df[cols]
+        
+        if train_df.empty:
+            raise ValueError("No matching predictions found! Check that prediction_id links are correct.")
+        
+        logging.info(f"✅ Matched {len(train_df)} predictions with manager feedback")
+        logging.info(f"Columns after merge: {train_df.columns.tolist()}")
+        
+        # 4. Use manager_risk as ground truth label
+        train_df['needs_maintenance'] = train_df['manager_risk']
+        
+        # Log some statistics (handle both risk_score and predicted_risk columns)
+        pred_col = 'risk_score' if 'risk_score' in train_df.columns else 'predicted_risk'
+        if pred_col in train_df.columns:
+            avg_correction = (train_df['manager_risk'] - train_df[pred_col]).abs().mean()
+            logging.info(f"Average correction magnitude: {avg_correction:.3f}")
+        else:
+            logging.warning(f"Neither 'risk_score' nor 'predicted_risk' found in columns: {train_df.columns.tolist()}")
+        
+        # 5. Prepare for training (drop metadata columns)
+        drop_cols = ['module', 'repo_name', 'created_at_pred', 'created_at_feedback', 
+                     'filename', 'prediction_id', 'manager_risk', 'risk_score', 'predicted_risk',
+                     'risk_category', 'user_id', 'model_version', 'model_name', 'source']
+        train_df = train_df.drop(columns=[c for c in drop_cols if c in train_df.columns], errors='ignore')
+        
+        logging.info(f"Columns after dropping metadata: {train_df.columns.tolist()}")
+        
+        # Verify we have numeric feature columns
+        feature_cols = [c for c in train_df.columns if c != 'needs_maintenance']
+        if len(feature_cols) == 0:
+            raise ValueError("No feature columns found after dropping metadata!")
+        
+        non_numeric = train_df[feature_cols].select_dtypes(exclude=['int64', 'float64', 'bool']).columns.tolist()
+        if non_numeric:
+            raise ValueError(f"Non-numeric columns found: {non_numeric}. All features must be numeric!")
+        
+        # Ensure needs_maintenance is last column
+        if 'needs_maintenance' in train_df.columns:
+            cols = [c for c in train_df.columns if c != 'needs_maintenance'] + ['needs_maintenance']
+            train_df = train_df[cols]
 
         dataset_path = Config.DATA_DIR / "finetune_dataset.parquet"
         train_df.to_parquet(dataset_path, index=False)
         context['ti'].xcom_push(key='finetune_dataset_path', value=str(dataset_path))
-        logging.info(f"Finetune dataset prepared: {train_df.shape[0]} rows, {train_df.shape[1]} columns")
+        logging.info(f"Fine-tune dataset prepared: {train_df.shape[0]} rows, {train_df.shape[1]} features")
+        logging.info(f"Saved to: {dataset_path}")
 
     def finetune_model(**context):
         """Load dataset and fine-tune latest model"""

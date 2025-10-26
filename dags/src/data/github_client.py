@@ -119,7 +119,8 @@ class GitHubDataCollector:
         module_stats = defaultdict(lambda: {
             "lines_added": 0, "lines_removed": 0, "prs": 0,
             "unique_authors": set(), "bug_prs": 0, "churn": 0, "created_at": None,
-            "repo_name": repo_name
+            "repo_name": repo_name, "first_seen": None, "last_modified": None,
+            "days_tracked": since_days
         })
 
         for pr_issue in prs:
@@ -138,6 +139,12 @@ class GitHubDataCollector:
                 module_stats[module]['lines_removed'] += f.deletions
                 module_stats[module]['churn'] += f.additions + f.deletions
                 module_stats[module]['created_at'] = pr.merged_at
+                
+                # Track first and last modification timestamps for temporal features
+                if module_stats[module]['first_seen'] is None or pr.merged_at < module_stats[module]['first_seen']:
+                    module_stats[module]['first_seen'] = pr.merged_at
+                if module_stats[module]['last_modified'] is None or pr.merged_at > module_stats[module]['last_modified']:
+                    module_stats[module]['last_modified'] = pr.merged_at
 
             for module in touched_modules:
                 module_stats[module]['prs'] += 1
@@ -150,6 +157,19 @@ class GitHubDataCollector:
 
         rows = []
         for module, stats in module_stats.items():
+            # Calculate temporal features
+            file_age_days = None
+            last_modified_days = None
+            
+            if stats['first_seen'] and stats['last_modified']:
+                now = datetime.datetime.utcnow()
+                # Use timezone-aware comparison if merged_at has timezone
+                if stats['first_seen'].tzinfo:
+                    now = datetime.datetime.now(datetime.timezone.utc)
+                
+                file_age_days = (now - stats['first_seen']).days
+                last_modified_days = (now - stats['last_modified']).days
+            
             rows.append({
                 "module": module,
                 "filename": module_stats[module]['filename'],
@@ -160,7 +180,10 @@ class GitHubDataCollector:
                 "bug_prs": stats["bug_prs"],
                 "churn": stats["churn"],
                 "created_at": stats["created_at"],
-                "repo_name": stats["repo_name"]
+                "repo_name": stats["repo_name"],
+                "days_tracked": stats["days_tracked"],
+                "file_age_days": file_age_days,
+                "last_modified_days": last_modified_days
             })
 
         return pd.DataFrame(rows)

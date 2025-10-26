@@ -73,7 +73,15 @@ def label_data(**context):
         return
 
     df = pd.read_parquet(feature_path)
-    labeler = LabelCreator(bug_threshold=0.2, churn_threshold=50)
+    
+    # Training uses ONLY heuristic labels (no manager feedback)
+    labeler = LabelCreator(
+        mongo_uri=MONGO_URI,
+        mongo_db="risk_model_db",
+        feedback_collection="risk_feedback",
+        use_manager_feedback=False,  # Disable manager feedback for initial training
+        fallback_to_heuristic=True
+    )
     labeled_df = labeler.create_labels(df)
 
     labeled_path = Config.DATA_DIR / "labeled_data.parquet"
@@ -86,7 +94,9 @@ def label_data(**context):
         mongo_db="risk_model_db",
         mongo_collection="labeled_pr_data"
     )
-    logger.info(f"Labeled data saved and pushed to MongoDB, {len(labeled_df)} rows")
+    
+    logger.info(f"Labeled data saved and pushed to MongoDB, {len(labeled_df)} rows (heuristic labels only)")
+
 
 
 def train_model(**context):
@@ -96,7 +106,14 @@ def train_model(**context):
         return
 
     df = pd.read_parquet(labeled_path)
-    df.drop(inplace=True, columns=['repo_name', 'created_at'], errors='ignore')
+    
+    # Drop metadata columns
+    drop_cols = ['repo_name', 'created_at', 'filename', 'label_source', 
+                 'risk_category', 'feedback_count', 'last_feedback_at']
+    df.drop(inplace=True, columns=[c for c in drop_cols if c in df.columns], errors='ignore')
+    
+    logger.info(f"Training on {len(df)} samples with heuristic labels")
+    
     trainer = RiskModelTrainer()
     model, model_name, X_test, y_test = trainer.train(df)
 
