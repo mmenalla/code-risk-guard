@@ -302,6 +302,36 @@ def render_performance_header() -> None:
     st.markdown("Track model accuracy, correction patterns, and disagreement rates over time.")
 
 
+def render_agreement_pie_chart(agreement_count: int, disagreement_count: int, agreement_rate: float) -> None:
+    """Render agreement vs disagreement as a pie chart"""
+    import plotly.graph_objects as go
+    
+    fig = go.Figure(data=[go.Pie(
+        labels=['✅ Agreed (No Feedback)', '⚠️ Disagreed (Gave Feedback)'],
+        values=[agreement_count, disagreement_count],
+        hole=0.4,
+        marker=dict(colors=['#4CAF50', '#FF9800']),
+        textinfo='label+percent',
+        textfont=dict(size=14),
+        hovertemplate='<b>%{label}</b><br>Count: %{value}<br>Percentage: %{percent}<extra></extra>'
+    )])
+    
+    fig.update_layout(
+        showlegend=True,
+        height=400,
+        margin=dict(t=40, b=40, l=40, r=40),
+        annotations=[dict(
+            text=f'{agreement_rate:.1f}%<br>Agreement',
+            x=0.5, y=0.5,
+            font_size=20,
+            showarrow=False
+        )]
+    )
+    
+    st.plotly_chart(fig, use_container_width=True)
+    st.caption("Goal: High agreement rate (>75%) means model is accurate")
+
+
 def render_kpi_metrics(feedback_df, predictions: List[Dict]) -> None:
     """Render key performance indicators"""
     import numpy as np
@@ -357,6 +387,184 @@ def render_kpi_metrics(feedback_df, predictions: List[Dict]) -> None:
             delta_color="inverse",
             help=f"% of predictions that received manager feedback (implicit agreement if no feedback)"
         )
+
+
+def render_model_metrics_progress(metrics_df) -> None:
+    """Render model metrics progress/regression analysis"""
+    import plotly.graph_objects as go
+    
+    st.markdown("---")
+    st.markdown("#### 📊 Model Training Progress")
+    
+    if len(metrics_df) == 0:
+        st.info("No training metrics available yet.")
+        return
+    
+    # Sort by timestamp
+    metrics_df = metrics_df.sort_values('timestamp')
+    
+    # Get latest and earliest metrics for comparison
+    latest = metrics_df.iloc[-1]
+    if len(metrics_df) > 1:
+        earliest = metrics_df.iloc[0]
+        
+        # Calculate improvements
+        mae_change = latest['mae'] - earliest['mae']
+        mse_change = latest['mse'] - earliest['mse']
+        r2_change = latest['r2'] - earliest['r2']
+        
+        col_metric1, col_metric2, col_metric3 = st.columns(3)
+        
+        with col_metric1:
+            st.metric(
+                "Latest MAE",
+                f"{latest['mae']:.4f}",
+                delta=f"{mae_change:.4f}",
+                delta_color="inverse",
+                help="Lower is better. Mean Absolute Error"
+            )
+        
+        with col_metric2:
+            st.metric(
+                "Latest MSE",
+                f"{latest['mse']:.4f}",
+                delta=f"{mse_change:.4f}",
+                delta_color="inverse",
+                help="Lower is better. Mean Squared Error"
+            )
+        
+        with col_metric3:
+            st.metric(
+                "Latest R²",
+                f"{latest['r2']:.4f}",
+                delta=f"{r2_change:.4f}",
+                delta_color="normal",
+                help="Higher is better. R-squared score (max 1.0)"
+            )
+    else:
+        # Only one record
+        col_metric1, col_metric2, col_metric3 = st.columns(3)
+        
+        with col_metric1:
+            st.metric("Latest MAE", f"{latest['mae']:.4f}", help="Mean Absolute Error")
+        
+        with col_metric2:
+            st.metric("Latest MSE", f"{latest['mse']:.4f}", help="Mean Squared Error")
+        
+        with col_metric3:
+            st.metric("Latest R²", f"{latest['r2']:.4f}", help="R-squared score")
+    
+    # Progress trend charts
+    st.markdown("##### 📈 Training Metrics Over Time")
+    
+    col_chart1, col_chart2 = st.columns(2)
+    
+    with col_chart1:
+        # MAE and MSE trends (lower is better)
+        fig_error = go.Figure()
+        
+        fig_error.add_trace(go.Scatter(
+            x=metrics_df['timestamp'],
+            y=metrics_df['mae'],
+            mode='lines+markers',
+            name='MAE',
+            line=dict(color='#FF6B6B', width=2),
+            marker=dict(size=8)
+        ))
+        
+        fig_error.add_trace(go.Scatter(
+            x=metrics_df['timestamp'],
+            y=metrics_df['mse'],
+            mode='lines+markers',
+            name='MSE',
+            line=dict(color='#4ECDC4', width=2),
+            marker=dict(size=8)
+        ))
+        
+        fig_error.update_layout(
+            title="Error Metrics (Lower is Better)",
+            xaxis_title="Training Date",
+            yaxis_title="Error Value",
+            hovermode='x unified',
+            height=350,
+            margin=dict(t=50, b=40, l=40, r=40)
+        )
+        
+        st.plotly_chart(fig_error, use_container_width=True)
+    
+    with col_chart2:
+        # R² trend (higher is better)
+        fig_r2 = go.Figure()
+        
+        fig_r2.add_trace(go.Scatter(
+            x=metrics_df['timestamp'],
+            y=metrics_df['r2'],
+            mode='lines+markers',
+            name='R²',
+            line=dict(color='#95E1D3', width=2),
+            marker=dict(size=8),
+            fill='tozeroy',
+            fillcolor='rgba(149, 225, 211, 0.2)'
+        ))
+        
+        fig_r2.update_layout(
+            title="R² Score (Higher is Better)",
+            xaxis_title="Training Date",
+            yaxis_title="R² Score",
+            hovermode='x unified',
+            height=350,
+            margin=dict(t=50, b=40, l=40, r=40),
+            yaxis=dict(range=[0, 1])
+        )
+        
+        st.plotly_chart(fig_r2, use_container_width=True)
+    
+    # Model comparison table
+    if len(metrics_df) > 1:
+        st.markdown("##### 📋 All Training Runs")
+        
+        display_df = metrics_df[['timestamp', 'model_name', 'mae', 'mse', 'r2']].copy()
+        display_df['timestamp'] = display_df['timestamp'].dt.strftime('%Y-%m-%d %H:%M')
+        display_df.columns = ['Timestamp', 'Model', 'MAE', 'MSE', 'R²']
+        
+        # Add improvement indicators
+        display_df['MAE Trend'] = ''
+        display_df['MSE Trend'] = ''
+        display_df['R² Trend'] = ''
+        
+        for i in range(1, len(display_df)):
+            prev_idx = display_df.index[i-1]
+            curr_idx = display_df.index[i]
+            
+            # MAE (lower is better)
+            mae_diff = metrics_df.loc[curr_idx, 'mae'] - metrics_df.loc[prev_idx, 'mae']
+            display_df.loc[curr_idx, 'MAE Trend'] = '📉' if mae_diff < 0 else '📈'
+            
+            # MSE (lower is better)
+            mse_diff = metrics_df.loc[curr_idx, 'mse'] - metrics_df.loc[prev_idx, 'mse']
+            display_df.loc[curr_idx, 'MSE Trend'] = '📉' if mse_diff < 0 else '📈'
+            
+            # R² (higher is better)
+            r2_diff = metrics_df.loc[curr_idx, 'r2'] - metrics_df.loc[prev_idx, 'r2']
+            display_df.loc[curr_idx, 'R² Trend'] = '📈' if r2_diff > 0 else '📉'
+        
+        st.dataframe(
+            display_df.sort_values('Timestamp', ascending=False),
+            use_container_width=True,
+            hide_index=True
+        )
+        
+        # Progress assessment
+        if len(metrics_df) >= 2:
+            recent_mae = metrics_df.tail(2)['mae'].values
+            recent_r2 = metrics_df.tail(2)['r2'].values
+            
+            if recent_mae[-1] < recent_mae[0] and recent_r2[-1] > recent_r2[0]:
+                st.success("✅ **Model is improving!** Latest training shows better metrics.")
+            elif recent_mae[-1] > recent_mae[0] and recent_r2[-1] < recent_r2[0]:
+                st.warning("⚠️ **Model is regressing.** Latest training shows worse metrics.")
+            else:
+                st.info("📊 **Model is stable.** Metrics show mixed changes.")
 
 
 def generate_actionable_insights(feedback_df, predictions: List[Dict], over_predictions: int, under_predictions: int) -> List[str]:

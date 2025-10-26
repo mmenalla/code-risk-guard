@@ -8,3 +8,4 @@ atlassian-python-api
 streamlit
 python-dotenv
 pymongo
+plotly
