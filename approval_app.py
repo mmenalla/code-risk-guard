@@ -10,28 +10,19 @@ from dags.src.jira.jira_client import JiraClient
 from dags.src.utils.config import Config
 
 load_dotenv()
-MONGO_URI = "mongodb://admin:admin@localhost:27017/risk_model_db?authSource=admin"
 
+# MongoDB configuration from environment variables
+MONGO_URI = os.getenv("MONGO_URI", "mongodb://admin:admin@localhost:27017/risk_model_db?authSource=admin")
 DB_NAME = os.getenv("MONGO_DB", "risk_model_db")
 COLLECTION_NAME = os.getenv("MONGO_COLLECTION", "ticket_drafts")
+PREDICTIONS_COLLECTION = os.getenv("MONGO_PREDICTIONS_COLLECTION", "model_predictions")
+FEEDBACK_COLLECTION = os.getenv("MONGO_FEEDBACK_COLLECTION", "risk_feedback")
 
 client = MongoClient(MONGO_URI)
 collection = client[DB_NAME][COLLECTION_NAME]
+pred_collection = client[DB_NAME][PREDICTIONS_COLLECTION]
 
 jira_client = JiraClient()
-
-from dags.src.data.save_incremental_labeled_data import log_human_feedback
-from dags.src.utils.config import Config
-
-
-load_dotenv()
-MONGO_URI = "mongodb://admin:admin@localhost:27017/risk_model_db?authSource=admin"
-
-DB_NAME = os.getenv("MONGO_DB", "risk_model_db")
-PREDICTIONS_COLLECTION = os.getenv("MONGO_PREDICTIONS_COLLECTION", "model_predictions")
-
-client = MongoClient(MONGO_URI)
-pred_collection = client[DB_NAME][PREDICTIONS_COLLECTION]
 
 st.set_page_config(page_title="MaintAI - AI Risk Model Dashboard", layout="wide", page_icon="🤖")
 
@@ -189,7 +180,7 @@ with tab2:
         st.info("✅ No predictions found.")
     else:
         # Fetch latest risk scores from risk_feedback table
-        feedback_collection = client[DB_NAME]["risk_feedback"]
+        feedback_collection = client[DB_NAME][FEEDBACK_COLLECTION]
         
         # Merge feedback data with predictions
         for pred in predictions:
@@ -287,8 +278,8 @@ with tab2:
         
         if "pred_score_status" not in st.session_state:
             st.session_state.pred_score_status = {}
-        if "show_features" not in st.session_state:
-            st.session_state.show_features = {}
+        if "expanded_file" not in st.session_state:
+            st.session_state.expanded_file = None
 
         def color_for(val: float):
             if val >= 0.7: return ("#FFCDD2", "HIGH")
@@ -376,32 +367,66 @@ with tab2:
                             risk_change_badge = f"<span style='background:{change_color}; color:white; padding:2px 6px; border-radius:8px; font-size:11px; margin-left:6px;'>{arrow} {abs(change):.2f}</span>"
                     
                     with st.container():
-                        # Use columns for better layout instead of HTML
-                        header_col1, header_col2 = st.columns([2, 2])
+                        # Expandable file details section
+                        expander_title = f"📁 {file_name}"
+                        if has_feedback:
+                            expander_title += " 🔄"
                         
-                        with header_col1:
-                            # Risk score badge and filename
-                            badge_col, name_col = st.columns([1, 4])
-                            with badge_col:
-                                st.markdown(f"<div style='background:{file_color}; padding:8px; border-radius:16px; font-weight:700; text-align:center;'>{risk_score_display}</div>", unsafe_allow_html=True)
-                            with name_col:
-                                display_name = f"**{file_name}**"
-                                if risk_change_badge:
-                                    st.markdown(risk_change_badge + " " + display_name, unsafe_allow_html=True)
-                                else:
-                                    st.markdown(display_name)
-                                if has_feedback:
-                                    st.markdown("<span style='background:#2196F3; color:white; padding:2px 6px; border-radius:8px; font-size:10px;'>UPDATED</span>", unsafe_allow_html=True)
+                        # Check if this file should be expanded
+                        is_expanded = st.session_state.expanded_file == pred_id
                         
-                        with header_col2:
-                            st.caption(f"**Model:** {model_name}")
-                            st.caption(f"**Date:** {created_str}")
-                            st.caption(f"**Path:** `{full_module}`")
+                        with st.expander(expander_title, expanded=is_expanded):
+                            # Track that this expander is being viewed
+                            if is_expanded:
+                                # Keep it tracked as expanded
+                                pass
+                            else:
+                                # User manually expanded it, track it
+                                st.session_state.expanded_file = pred_id
+                            
+                            # File metadata in columns
+                            meta_col1, meta_col2 = st.columns(2)
+                            
+                            with meta_col1:
+                                st.markdown(f"**📄 File Name:** `{file_name}`")
+                                st.markdown(f"**📂 Path:** `{full_module}`")
+                                st.markdown(f"**🎯 Current Risk:** {risk_score_display}")
+                                if has_feedback and isinstance(original_risk, (int, float)):
+                                    st.markdown(f"**📊 Original Risk:** {original_risk:.2f}")
+                                    if abs(original_risk - risk_score) > 0.01:
+                                        change = risk_score - original_risk
+                                        arrow = "↑" if change > 0 else "↓"
+                                        st.markdown(f"**📈 Change:** {arrow} {abs(change):.2f}")
+                            
+                            with meta_col2:
+                                st.markdown(f"**🤖 Model:** {model_name}")
+                                st.markdown(f"**📅 Date:** {created_str}")
+                                st.markdown(f"**⚠️ Risk Level:** {file_level}")
+                                repo = pred.get("repo_name") or pred.get("features", {}).get("repo_name") or Config.GITHUB_REPO
+                                st.markdown(f"**📦 Repository:** {repo}")
+                            
+                            st.markdown("---")
+                            
+                            # Feature Details
+                            st.markdown("### 📊 Feature Details")
+                            feat = pred.get("features", {})
+                            if feat:
+                                # Display in a more readable format
+                                cols = st.columns(3)
+                                feature_items = [(k, v) for k, v in feat.items() if k not in ("repo_name", "created_at")]
+                                for idx, (k, v) in enumerate(feature_items):
+                                    with cols[idx % 3]:
+                                        if isinstance(v, float):
+                                            st.metric(k.replace("_", " ").title(), f"{v:.3f}")
+                                        else:
+                                            st.metric(k.replace("_", " ").title(), v)
+                            else:
+                                st.info("No feature details available.")
                         
                         
                         
                         # Action row
-                        col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
+                        col1, col2, col3 = st.columns([3, 1, 1])
                         with col1:
                             new_score = st.number_input(
                                 "Adjust Risk Score",
@@ -424,15 +449,9 @@ with tab2:
                                     user_id=os.getenv("CURRENT_USER", "manager_ui"),
                                 )
                                 st.session_state.pred_score_status[pred_id] = "updated"
-                                st.success(f"✅ Updated to {new_score:.2f}")
-                                st.rerun()
+                                st.success(f"✅ Updated to {new_score:.2f} - Refresh page to see in stats")
                         
                         with col3:
-                            if st.button("🔍 Details", key=f"toggle_features_{pred_id}", help="Show/hide feature details", use_container_width=True):
-                                st.session_state.show_features[pred_id] = not st.session_state.show_features.get(pred_id, False)
-                                st.rerun()
-                        
-                        with col4:
                             # Quick set buttons using a popover/menu approach
                             quick_menu = st.popover("⚡ Quick", help="Quick risk presets", use_container_width=True)
                             with quick_menu:
@@ -448,7 +467,7 @@ with tab2:
                                         user_id=os.getenv("CURRENT_USER", "manager_ui"),
                                     )
                                     st.session_state.pred_score_status[pred_id] = "updated"
-                                    st.rerun()
+                                    st.success(f"✅ Set to {new_val:.2f} - Refresh to update stats")
                                 
                                 if st.button("0.25 (Low)", key=f"quick_25_{pred_id}", use_container_width=True):
                                     new_val = 0.25
@@ -461,7 +480,7 @@ with tab2:
                                         user_id=os.getenv("CURRENT_USER", "manager_ui"),
                                     )
                                     st.session_state.pred_score_status[pred_id] = "updated"
-                                    st.rerun()
+                                    st.success(f"✅ Set to {new_val:.2f} - Refresh to update stats")
                                 
                                 if st.button("0.5 (Medium)", key=f"quick_50_{pred_id}", use_container_width=True):
                                     new_val = 0.5
@@ -474,7 +493,7 @@ with tab2:
                                         user_id=os.getenv("CURRENT_USER", "manager_ui"),
                                     )
                                     st.session_state.pred_score_status[pred_id] = "updated"
-                                    st.rerun()
+                                    st.success(f"✅ Set to {new_val:.2f} - Refresh to update stats")
                                 
                                 if st.button("0.75 (High)", key=f"quick_75_{pred_id}", use_container_width=True):
                                     new_val = 0.75
@@ -487,7 +506,7 @@ with tab2:
                                         user_id=os.getenv("CURRENT_USER", "manager_ui"),
                                     )
                                     st.session_state.pred_score_status[pred_id] = "updated"
-                                    st.rerun()
+                                    st.success(f"✅ Set to {new_val:.2f} - Refresh to update stats")
                                 
                                 if st.button("1.0 (Critical)", key=f"quick_100_{pred_id}", use_container_width=True):
                                     new_val = 1.0
@@ -500,23 +519,8 @@ with tab2:
                                         user_id=os.getenv("CURRENT_USER", "manager_ui"),
                                     )
                                     st.session_state.pred_score_status[pred_id] = "updated"
-                                    st.rerun()
-                        st.markdown("---")
-                        # Show features if toggled
-                        if st.session_state.show_features.get(pred_id):
-                            with st.expander("📊 Feature Details", expanded=True):
-                                feat = pred.get("features", {})
-                                if feat:
-                                    # Display in a more readable format
-                                    cols = st.columns(3)
-                                    feature_items = [(k, v) for k, v in feat.items() if k not in ("repo_name", "created_at")]
-                                    for idx, (k, v) in enumerate(feature_items):
-                                        with cols[idx % 3]:
-                                            if isinstance(v, float):
-                                                st.metric(k.replace("_", " ").title(), f"{v:.3f}")
-                                            else:
-                                                st.metric(k.replace("_", " ").title(), v)
-                                else:
-                                    st.info("No feature details available.")
+                                    st.success(f"✅ Set to {new_val:.2f} - Refresh to update stats")
                         
+                        st.markdown("---")
                         st.markdown("")  # spacing
+                        
