@@ -60,118 +60,239 @@ tab1, tab2, tab3 = st.tabs(["🎫 Ticket Review", "📊 Edit Risk Scores", "📈
 with tab1:
     tickets = list(collection.find({"is_deleted": False}))
 
+    # Initialize session state
+    if "ticket_status" not in st.session_state:
+        st.session_state.ticket_status = {}
+    if "selected_tickets" not in st.session_state:
+        st.session_state.selected_tickets = set()
+
+    # === Summary Dashboard ===
+    if tickets:
+        valid_risks = [t.get("risk_score") for t in tickets if isinstance(t.get("risk_score"), (int, float))]
+        avg_risk = sum(valid_risks) / len(valid_risks) if valid_risks else 0.0
+        high_count = sum(1 for r in valid_risks if r >= 0.7)
+        medium_count = sum(1 for r in valid_risks if 0.4 <= r < 0.7)
+        low_count = sum(1 for r in valid_risks if r < 0.4)
+
+        st.markdown("### 📊 Ticket Overview")
+        col1, col2, col3, col4, col5 = st.columns(5)
+        with col1:
+            st.metric("📋 Total Tickets", len(tickets))
+        with col2:
+            st.metric("📈 Avg Risk", f"{avg_risk:.2f}")
+        with col3:
+            st.metric("🔴 High Risk", high_count, help="Risk ≥ 0.7")
+        with col4:
+            st.metric("🟡 Medium Risk", medium_count, help="0.4 ≤ Risk < 0.7")
+        with col5:
+            st.metric("🟢 Low Risk", low_count, help="Risk < 0.4")
+
+        st.markdown("---")
+
+        # === Filters & Search ===
+        st.markdown("### 🔍 Filters & Search")
+        filter_col1, filter_col2, filter_col3, filter_col4 = st.columns([3, 2, 2, 2])
+        
+        with filter_col1:
+            search_term = st.text_input("🔎 Search", placeholder="Search by title, module, or repo...", label_visibility="collapsed")
+        
+        with filter_col2:
+            risk_filter = st.selectbox("Risk Level", ["All", "🔴 High (≥0.7)", "🟡 Medium (0.4-0.7)", "🟢 Low (<0.4)"], label_visibility="collapsed")
+        
+        with filter_col3:
+            repos = list(set([t.get("repo_name", "Unknown") for t in tickets]))
+            repo_filter = st.selectbox("Repository", ["All"] + sorted(repos), label_visibility="collapsed")
+        
+        with filter_col4:
+            sort_by = st.selectbox("Sort By", ["Risk ↓", "Risk ↑", "Title A-Z", "Title Z-A"], label_visibility="collapsed")
+
+        # Apply filters
+        filtered_tickets = tickets.copy()
+        
+        # Search filter
+        if search_term:
+            search_lower = search_term.lower()
+            filtered_tickets = [t for t in filtered_tickets if 
+                search_lower in t.get("title", "").lower() or 
+                search_lower in t.get("module", "").lower() or 
+                search_lower in t.get("repo_name", "").lower()]
+        
+        # Risk filter
+        if risk_filter != "All":
+            if "High" in risk_filter:
+                filtered_tickets = [t for t in filtered_tickets if isinstance(t.get("risk_score"), (int, float)) and t.get("risk_score") >= 0.7]
+            elif "Medium" in risk_filter:
+                filtered_tickets = [t for t in filtered_tickets if isinstance(t.get("risk_score"), (int, float)) and 0.4 <= t.get("risk_score") < 0.7]
+            elif "Low" in risk_filter:
+                filtered_tickets = [t for t in filtered_tickets if isinstance(t.get("risk_score"), (int, float)) and t.get("risk_score") < 0.4]
+        
+        # Repo filter
+        if repo_filter != "All":
+            filtered_tickets = [t for t in filtered_tickets if t.get("repo_name") == repo_filter]
+        
+        # Sort
+        if sort_by == "Risk ↓":
+            filtered_tickets.sort(key=lambda x: x.get("risk_score", 0), reverse=True)
+        elif sort_by == "Risk ↑":
+            filtered_tickets.sort(key=lambda x: x.get("risk_score", 0))
+        elif sort_by == "Title A-Z":
+            filtered_tickets.sort(key=lambda x: x.get("title", ""))
+        elif sort_by == "Title Z-A":
+            filtered_tickets.sort(key=lambda x: x.get("title", ""), reverse=True)
+
+        st.markdown(f"**Showing {len(filtered_tickets)} of {len(tickets)} tickets**")
+        st.markdown("---")
+
     if not tickets:
         st.info("✅ No pending tickets to review.")
+    elif not filtered_tickets:
+        st.warning("🔍 No tickets match your filters. Try adjusting the search criteria.")
     else:
-        if "ticket_status" not in st.session_state:
-            st.session_state.ticket_status = {}
-
-        for ticket in tickets:
+        # === Ticket Cards ===
+        st.markdown("### 🎫 Tickets")
+        
+        for ticket in filtered_tickets:
             ticket_id = str(ticket["_id"])
             status = st.session_state.ticket_status.get(ticket_id, None)
-
+            repo_name = ticket.get("repo_name", "Unknown")
+            prediction_id = ticket.get("prediction_id")
+            risk_score = ticket.get("risk_score", 0.0)
+            
+            # Determine colors and borders
+            def get_risk_info(val):
+                if not isinstance(val, (int, float)):
+                    return {"color": "#E0E0E0", "label": "N/A", "icon": "⚪", "border": "#CCCCCC"}
+                if val >= 0.7:
+                    return {"color": "#FFCDD2", "label": "HIGH", "icon": "🔴", "border": "#E57373"}
+                if val >= 0.4:
+                    return {"color": "#FFF9C4", "label": "MEDIUM", "icon": "🟡", "border": "#FFD54F"}
+                return {"color": "#C8E6C9", "label": "LOW", "icon": "🟢", "border": "#81C784"}
+            
+            risk_info = get_risk_info(risk_score)
+            
+            # Status styling
             if status == "approved":
-                color = "#d4edda"  # light green
+                card_bg = "#E8F5E9"
+                border_color = "#4CAF50"
+                status_badge = "✅ APPROVED"
             elif status == "deleted":
-                color = "#f8d7da"  # light red
+                card_bg = "#FFEBEE"
+                border_color = "#F44336"
+                status_badge = "🗑️ DELETED"
             else:
-                color = "#ffffff"  # white
+                card_bg = "#FFFFFF"
+                border_color = risk_info["border"]
+                status_badge = ""
 
-            with st.expander(f"📄 {ticket['title']} — ({ticket['module']})", expanded=True):
-                # Enhanced ticket card layout
-                def ticket_color(val):
-                    if not isinstance(val, (int, float)):
-                        return "#E0E0E0"
-                    if val >= 0.7:
-                        return "#FFCDD2"  # high
-                    if val >= 0.4:
-                        return "#FFF9C4"  # medium
-                    return "#C8E6C9"      # low
-                pill_bg = ticket_color(ticket.get("risk_score"))
-                risk_display = f"{float(ticket.get('risk_score', 0.0)):.2f}" if isinstance(ticket.get('risk_score'), (int,float)) else "N/A"
-                pill_html = f"<span style='background:{pill_bg}; padding:6px 12px; border-radius:18px; font-weight:600;'>Risk: {risk_display}</span>"
-                repo_name = ticket.get("repo_name", "repo?")
-                prediction_id = ticket.get("prediction_id")
+            # Create expander title with key info
+            expander_label = f"{risk_info['icon']} {ticket.get('title', 'Untitled')} - {risk_info['label']}: {float(risk_score):.2f}"
+            
+            # Use expander for collapsible tickets
+            with st.expander(expander_label, expanded=False):
+                # Card container inside expander
+                with st.container():
+                    # Metadata section
+                    st.markdown(f"""<div style='background:{card_bg}; border-left: 6px solid {border_color}; border: 1px solid {border_color}40; border-radius: 12px; padding: 20px; margin-bottom: 15px; box-shadow: 0 2px 8px rgba(0,0,0,0.08);'>{f'<div style="text-align: right; margin-bottom: 10px;"><span style="background: #E3F2FD; color: #1976D2; padding: 4px 12px; border-radius: 12px; font-size: 11px; font-weight: 600;">{status_badge}</span></div>' if status_badge else ''}<div style='display: flex; gap: 20px; flex-wrap: wrap; padding: 10px; background: #F8F9FA; border-radius: 8px; margin-bottom: 15px;'><div style='display: flex; align-items: center; gap: 6px;'><span style='font-size: 14px;'>📁</span><span style='font-size: 13px; color: #666;'>Module:</span><code style='background: #E3F2FD; padding: 2px 8px; border-radius: 4px; font-size: 12px;'>{ticket.get("module", "N/A")}</code></div><div style='display: flex; align-items: center; gap: 6px;'><span style='font-size: 14px;'>🏢</span><span style='font-size: 13px; color: #666;'>Repo:</span><code style='background: #E3F2FD; padding: 2px 8px; border-radius: 4px; font-size: 12px;'>{repo_name}</code></div>{f'<div style="display: flex; align-items: center; gap: 6px;"><span style="font-size: 14px;">🔗</span><span style="font-size: 13px; color: #666;">ID:</span><code style="background: #E3F2FD; padding: 2px 8px; border-radius: 4px; font-size: 12px;">{prediction_id}</code></div>' if prediction_id else ''}</div><div style='background: white; padding: 15px; border-radius: 8px; border: 1px solid #E0E0E0; margin-bottom: 15px;'><div style='font-weight: 600; color: #424242; margin-bottom: 8px; font-size: 13px;'>📝 DESCRIPTION</div><div style='color: #616161; line-height: 1.6; font-size: 14px;'>{ticket.get("description", "No description provided.")}</div></div>{f'<div style="background: #FFF9C4; padding: 12px; border-radius: 8px; border: 1px solid #FBC02D; margin-bottom: 15px;"><div style="font-weight: 600; color: #F57F17; margin-bottom: 6px; font-size: 12px;">⚠️ WHY IS THIS RISKY?</div><div style="color: #F57F17; font-size: 13px; line-height: 1.5;">Recent churn: {ticket.get("context", {}).get("recent_churn", "N/A")} lines • Bug ratio: {ticket.get("context", {}).get("bug_ratio", "N/A")} • Recent PRs: {ticket.get("context", {}).get("recent_prs", "N/A")}</div></div>' if ticket.get('context') else ''}<hr style='border: none; border-top: 2px solid #E0E0E0; margin: 20px 0 15px 0;'><div style='font-weight: 600; color: #424242; margin-bottom: 12px; font-size: 13px;'>⚙️ ACTIONS</div></div>""", unsafe_allow_html=True)
 
-                st.markdown(
-                    f"""
-                    <div style='background:#fafafa; border:1px solid #ddd; padding:12px 16px; border-radius:10px; display:flex; flex-direction:column; gap:10px;'>
-                      <div style='display:flex; align-items:center; gap:12px; flex-wrap:wrap;'>
-                        {pill_html}
-                        <span style='font-size:12px; color:#555;'>Module: <strong>{ticket['module']}</strong></span>
-                        <span style='font-size:12px; color:#555;'>Repo: <strong>{repo_name}</strong></span>
-                        {f"<span style='font-size:12px; color:#555;'>Prediction ID: <strong>{prediction_id}</strong></span>" if prediction_id else ''}
-                      </div>
-                      <div style='font-size:13px; line-height:1.4;'><strong>Description:</strong><br>{ticket['description']}</div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-
-                # Layout: left side risk edit, right side actions
-                edit_col, action_col = st.columns([2,2])
-                with edit_col:
+                    # Action buttons - INSIDE the card
+                    action_cols = st.columns([2, 2, 1, 1])
+                
+                with action_cols[0]:
                     new_score = st.number_input(
-                        "Edit Risk Score",
+                        "Adjust Risk Score",
                         key=f"risk_score_{ticket_id}",
-                        value=float(ticket['risk_score']),
-                        step=0.01,
+                        value=float(risk_score),
+                        step=0.05,
                         min_value=0.0,
                         max_value=1.0,
+                        help="Modify the risk score based on your assessment"
                     )
-                    if st.button("💾 Update Risk Score", key=f"update_{ticket_id}"):
+                
+                with action_cols[1]:
+                    st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
+                    if st.button("💾 Update Risk", key=f"update_{ticket_id}", width="stretch"):
                         log_human_feedback(
                             module=ticket["module"],
                             repo_name=repo_name,
-                            predicted_risk=ticket["risk_score"],
+                            predicted_risk=risk_score,
                             manager_risk=new_score,
                             prediction_id=str(prediction_id) if prediction_id else None,
                             user_id=os.getenv("CURRENT_USER", "manager_ui"),
                         )
-                        ticket["risk_score"] = new_score
-                        st.success(f"Updated risk to {new_score:.2f}")
-
-                with action_col:
-                    a1, a2, a3 = st.columns(3)
-                    with a1:
-                        if st.button("✅ Approve", key=f"approve_{ticket_id}"):
-                            try:
-                                jira_issue = jira_client.create_ticket(
-                                    title=ticket["title"],
-                                    description=ticket["description"],
-                                    project_key=os.getenv("JIRA_PROJECT_KEY", "TECH")
-                                )
-                                collection.update_one(
-                                    {"_id": ObjectId(ticket["_id"])},
-                                    {"$set": {
-                                        "is_deleted": True,
-                                        "jira_key": jira_issue["key"],
-                                        "jira_url": jira_issue["url"]
-                                    }},
-                                )
-                                st.session_state.ticket_status[ticket_id] = "approved"
-                                st.success(f"Jira: {jira_issue['key']}")
-                            except Exception as e:
-                                st.error(f"Jira error: {e}")
-                    with a2:
-                        if st.button("🗑️ Delete", key=f"delete_{ticket_id}"):
+                        collection.update_one(
+                            {"_id": ObjectId(ticket["_id"])},
+                            {"$set": {"risk_score": new_score}},
+                        )
+                        st.success(f"✅ Updated to {new_score:.2f}")
+                        st.rerun()
+                
+                with action_cols[2]:
+                    st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
+                    if st.button("📤 Send to Jira", key=f"approve_{ticket_id}", width="stretch"):
+                        try:
+                            # Determine priority based on risk score
+                            if risk_score >= 0.7:
+                                priority = "High"
+                            elif risk_score >= 0.4:
+                                priority = "Medium"
+                            else:
+                                priority = "Low"
+                            
+                            # Extract filename from module path
+                            module_path = ticket.get("module", "")
+                            filename = module_path.split("/")[-1] if module_path else "unknown"
+                            
+                            # Create labels: module path, filename, and MaintAIGenerated
+                            labels = [
+                                module_path.replace("/", "-").replace(".", "-") if module_path else "unknown-module",
+                                filename.replace(".", "-") if filename else "unknown-file",
+                                "MaintAIGenerated"
+                            ]
+                            
+                            jira_issue = jira_client.create_ticket(
+                                title=ticket["title"],
+                                description=ticket["description"],
+                                project_key=os.getenv("JIRA_PROJECT_KEY", "TECH"),
+                                priority=priority,
+                                labels=labels
+                            )
                             collection.update_one(
                                 {"_id": ObjectId(ticket["_id"])},
-                                {"$set": {"is_deleted": True}},
+                                {"$set": {
+                                    "is_deleted": True,
+                                    "jira_key": jira_issue["key"],
+                                    "jira_url": jira_issue["url"],
+                                    "approved_at": datetime.utcnow()
+                                }},
                             )
-                            st.session_state.ticket_status[ticket_id] = "deleted"
-                            log_human_feedback(
-                                module=ticket["module"],
-                                repo_name=repo_name,
-                                predicted_risk=ticket["risk_score"],
-                                manager_risk=0.0,
-                                prediction_id=str(prediction_id) if prediction_id else None,
-                                user_id=os.getenv("CURRENT_USER", "manager_ui"),
-                            )
-                            st.warning("Ticket deleted.")
-                    with a3:
-                        if st.button("↩ Refresh", key=f"refresh_{ticket_id}"):
-                            st.experimental_rerun()
+                            st.session_state.ticket_status[ticket_id] = "approved"
+                            st.success(f"🎉 Jira ticket created successfully!")
+                            st.markdown(f"**[{jira_issue['key']}]({jira_issue['url']})** - Click to open in Jira")
+                            st.info(f"📊 Priority: **{priority}** | 🏷️ Labels: {', '.join(labels)}")
+                        except Exception as e:
+                            st.error(f"❌ Error: {e}")
+                
+                with action_cols[3]:
+                    st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
+                    if st.button("🗑️ Reject", key=f"delete_{ticket_id}", width="stretch", type="secondary"):
+                        collection.update_one(
+                            {"_id": ObjectId(ticket["_id"])},
+                            {"$set": {"is_deleted": True, "rejected_at": datetime.utcnow()}},
+                        )
+                        st.session_state.ticket_status[ticket_id] = "deleted"
+                        log_human_feedback(
+                            module=ticket["module"],
+                            repo_name=repo_name,
+                            predicted_risk=risk_score,
+                            manager_risk=0.0,
+                            prediction_id=str(prediction_id) if prediction_id else None,
+                            user_id=os.getenv("CURRENT_USER", "manager_ui"),
+                        )
+                        st.warning("🗑️ Ticket rejected")
+                        st.rerun()
+                    
+                    # Close the card div
+                    st.markdown("</div>", unsafe_allow_html=True)
 
 
 with tab2:
@@ -466,7 +587,7 @@ with tab2:
                             )
                         
                         with col2:
-                            if st.button("💾 Save", key=f"update_pred_{pred_id}", help="Save updated risk score", use_container_width=True):
+                            if st.button("💾 Save", key=f"update_pred_{pred_id}", help="Save updated risk score", width="stretch"):
                                 log_human_feedback(
                                     module=full_module,
                                     repo_name=pred.get("repo_name") or pred.get("features", {}).get("repo_name") or Config.GITHUB_REPO,
@@ -480,10 +601,10 @@ with tab2:
                         
                         with col3:
                             # Quick set buttons using a popover/menu approach
-                            quick_menu = st.popover("⚡ Quick", help="Quick risk presets", use_container_width=True)
+                            quick_menu = st.popover("⚡ Quick", help="Quick risk presets", width="stretch")
                             with quick_menu:
                                 st.markdown("**Set Risk to:**")
-                                if st.button("0.0 (No Risk)", key=f"quick_0_{pred_id}", use_container_width=True):
+                                if st.button("0.0 (No Risk)", key=f"quick_0_{pred_id}", width="stretch"):
                                     new_val = 0.0
                                     log_human_feedback(
                                         module=full_module,
@@ -496,7 +617,7 @@ with tab2:
                                     st.session_state.pred_score_status[pred_id] = "updated"
                                     st.success(f"✅ Set to {new_val:.2f} - Refresh to update stats")
                                 
-                                if st.button("0.25 (Low)", key=f"quick_25_{pred_id}", use_container_width=True):
+                                if st.button("0.25 (Low)", key=f"quick_25_{pred_id}", width="stretch"):
                                     new_val = 0.25
                                     log_human_feedback(
                                         module=full_module,
@@ -509,7 +630,7 @@ with tab2:
                                     st.session_state.pred_score_status[pred_id] = "updated"
                                     st.success(f"✅ Set to {new_val:.2f} - Refresh to update stats")
                                 
-                                if st.button("0.5 (Medium)", key=f"quick_50_{pred_id}", use_container_width=True):
+                                if st.button("0.5 (Medium)", key=f"quick_50_{pred_id}", width="stretch"):
                                     new_val = 0.5
                                     log_human_feedback(
                                         module=full_module,
@@ -522,7 +643,7 @@ with tab2:
                                     st.session_state.pred_score_status[pred_id] = "updated"
                                     st.success(f"✅ Set to {new_val:.2f} - Refresh to update stats")
                                 
-                                if st.button("0.75 (High)", key=f"quick_75_{pred_id}", use_container_width=True):
+                                if st.button("0.75 (High)", key=f"quick_75_{pred_id}", width="stretch"):
                                     new_val = 0.75
                                     log_human_feedback(
                                         module=full_module,
@@ -535,7 +656,7 @@ with tab2:
                                     st.session_state.pred_score_status[pred_id] = "updated"
                                     st.success(f"✅ Set to {new_val:.2f} - Refresh to update stats")
                                 
-                                if st.button("1.0 (Critical)", key=f"quick_100_{pred_id}", use_container_width=True):
+                                if st.button("1.0 (Critical)", key=f"quick_100_{pred_id}", width="stretch"):
                                     new_val = 1.0
                                     log_human_feedback(
                                         module=full_module,
@@ -672,7 +793,7 @@ with tab3:
             'Count': [agreement_count, disagreement_count]
         })
         
-        st.bar_chart(agree_disagree_data.set_index('Status')['Count'], use_container_width=True)
+        st.bar_chart(agree_disagree_data.set_index('Status')['Count'], width="stretch")
         st.caption(f"Goal: High agreement rate (>75%) means model is accurate")
         
         # ========== CORRECTION DISTRIBUTION ==========
@@ -689,7 +810,7 @@ with tab3:
             feedback_df['correction_bin'] = pd.cut(feedback_df['correction'], bins=bins, labels=labels)
             correction_counts = feedback_df['correction_bin'].value_counts().sort_index()
             
-            st.bar_chart(correction_counts, use_container_width=True)
+            st.bar_chart(correction_counts, width="stretch")
             st.caption("Distribution of correction magnitudes - lower is better")
         
         with col_chart2:
@@ -703,7 +824,7 @@ with tab3:
                 'Count': [over_predictions, under_predictions, exact_match]
             })
             
-            st.bar_chart(direction_data.set_index('Category')['Count'], use_container_width=True)
+            st.bar_chart(direction_data.set_index('Category')['Count'], width="stretch")
             st.caption(f"Model bias: {over_predictions} over, {under_predictions} under, {exact_match} exact")
         
         # ========== CORRECTION TRENDS OVER TIME ==========
@@ -721,11 +842,11 @@ with tab3:
         col_trend1, col_trend2 = st.columns(2)
         
         with col_trend1:
-            st.line_chart(daily_corrections['avg_correction'], use_container_width=True)
+            st.line_chart(daily_corrections['avg_correction'], width="stretch")
             st.caption("Average correction magnitude over time - should trend downward")
         
         with col_trend2:
-            st.line_chart(daily_corrections['count'], use_container_width=True)
+            st.line_chart(daily_corrections['count'], width="stretch")
             st.caption("Number of corrections per day")
         
         # ========== MODEL COMPARISON ==========
@@ -774,7 +895,7 @@ with tab3:
                 
                 st.dataframe(
                     model_performance.sort_values('disagreement_rate'),
-                    use_container_width=True,
+                    width="stretch",
                     hide_index=True
                 )
                 st.caption("Lower disagreement rate = better model (manager agrees more often)")
@@ -792,7 +913,7 @@ with tab3:
         
         st.dataframe(
             top_disagreements,
-            use_container_width=True,
+            width="stretch",
             hide_index=True
         )
         
@@ -812,7 +933,7 @@ with tab3:
                 data=scatter_data,
                 x='Predicted Risk',
                 y='Manager Risk',
-                use_container_width=True
+                width="stretch"
             )
             st.caption("Perfect calibration would be a diagonal line from (0,0) to (1,1)")
         
@@ -831,7 +952,7 @@ with tab3:
             }).round(3)
             calibration.columns = ['Avg Predicted', 'Avg Manager', 'Avg Correction']
             
-            st.dataframe(calibration, use_container_width=True)
+            st.dataframe(calibration, width="stretch")
             st.caption("Check if each risk bucket is well-calibrated")
         
         # ========== MODEL METRICS HISTORY ==========
@@ -851,7 +972,7 @@ with tab3:
             
             st.dataframe(
                 recent_metrics,
-                use_container_width=True,
+                width="stretch",
                 hide_index=True
             )
             
@@ -860,12 +981,12 @@ with tab3:
             
             with col_metric1:
                 metrics_chart = metrics_df.set_index('timestamp')[['mae', 'mse']]
-                st.line_chart(metrics_chart, use_container_width=True)
+                st.line_chart(metrics_chart, width="stretch")
                 st.caption("MAE and MSE over time - should decrease with improvements")
             
             with col_metric2:
                 r2_chart = metrics_df.set_index('timestamp')[['r2']]
-                st.line_chart(r2_chart, use_container_width=True)
+                st.line_chart(r2_chart, width="stretch")
                 st.caption("R² score over time - higher is better (max 1.0)")
         
         # ========== ACTIONABLE INSIGHTS ==========
@@ -967,7 +1088,7 @@ with tab3:
                 data=csv_feedback,
                 file_name=f"model_feedback_{datetime.now().strftime('%Y%m%d')}.csv",
                 mime="text/csv",
-                use_container_width=True
+                width="stretch"
             )
         
         with col_export2:
@@ -982,6 +1103,6 @@ with tab3:
                     data=csv_metrics,
                     file_name=f"model_metrics_{datetime.now().strftime('%Y%m%d')}.csv",
                     mime="text/csv",
-                    use_container_width=True
+                    width="stretch"
                 )
 

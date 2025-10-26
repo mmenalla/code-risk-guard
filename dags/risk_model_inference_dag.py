@@ -114,8 +114,9 @@ def generate_jira_tickets(**context):
     prediction_id_mapping = context['ti'].xcom_pull(key='prediction_id_mapping', default={})
 
     predictions_df = pd.read_parquet(predictions_path)
-    high_risk_df = predictions_df[predictions_df['risk_score'] >= 0.2]
+    high_risk_df = predictions_df[predictions_df['risk_score'] >= Config.RISK_SCORE_THRESHOLD]
     logger.info(f"Identified {len(high_risk_df)} high-risk PRs for potential tickets.")
+    logger.info(f"Using risk score threshold: {Config.RISK_SCORE_THRESHOLD}")
 
     if high_risk_df.empty:
         logger.info("No high-risk PRs detected. Skipping Jira ticket creation.")
@@ -146,7 +147,7 @@ def generate_jira_tickets(**context):
         })
 
     logger.info(f"Generating LLM-based Jira ticket drafts for {len(tickets)} high-risk modules...")
-    ticket_drafts = ticket_generator.generate_tickets_bulk(tickets, num_of_tickets=3)
+    ticket_drafts = ticket_generator.generate_tickets_bulk(tickets, num_of_tickets=Config.NUM_TICKETS_PER_MODULE)
     ticket_drafts = [{**t, "is_deleted": False} for t in ticket_drafts]
 
     push_to_mongo(
