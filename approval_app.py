@@ -252,11 +252,38 @@ with tab2:
         st.markdown("---")
 
         def get_full_module(pred):
-            return (pred.get("module") or pred.get("features", {}).get("filename") or "unknown_module").strip()
+            """Get the full module path from prediction record."""
+            module = pred.get("module") or pred.get("features", {}).get("filename") or "unknown_module"
+            return module.strip()
+        
+        def get_file_name(full_path):
+            """Extract filename from full path, handling edge cases."""
+            if not full_path or full_path == "unknown_module":
+                return "unknown_module"
+            
+            # Split by / to get last component
+            parts = full_path.split('/')
+            filename = parts[-1] if parts else full_path
+            
+            # If filename is empty (path ends with /), try previous part
+            if not filename and len(parts) > 1:
+                filename = parts[-2]
+            
+            # If still empty or suspicious (no extension and very short), might be a directory
+            if not filename or (len(filename) < 3 and '.' not in filename):
+                # Return the full path instead
+                return full_path
+            
+            return filename
+        
         def get_group_module(pred):
+            """Get the directory path for grouping files."""
             full = get_full_module(pred)
             if '/' in full:
-                return full[:full.rfind('/')]
+                # Get everything except the last part (filename)
+                directory = full[:full.rfind('/')]
+                # If directory is empty, return root
+                return directory if directory else '(root)'
             return '(root)'
         
         # Apply filters
@@ -338,7 +365,7 @@ with tab2:
                     pred_id = str(pred["_id"])
                     status = st.session_state.pred_score_status.get(pred_id, None)
                     full_module = get_full_module(pred)
-                    file_name = full_module.split('/')[-1]
+                    file_name = get_file_name(full_module)
                     
                     # Use current_risk for display
                     risk_score = pred.get("current_risk")

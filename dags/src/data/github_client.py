@@ -33,8 +33,13 @@ class GitHubDataCollector:
 
     @staticmethod
     def module_from_path(path: str) -> str:
-        parts = path.split('/')
-        return '/'.join(parts[:2]) if len(parts) >= 2 else parts[0]
+        """
+        Convert file path to module identifier.
+        Returns the full path to properly identify files in nested directories.
+        """
+        # Return the full path - no truncation
+        # This ensures files like 'dags/src/models/train.py' are properly identified
+        return path
     
     def is_bug_fix_pr(self, pr) -> bool:
         """
