@@ -14,6 +14,16 @@ logger = logging.getLogger(__name__)
 
 
 class GitHubDataCollector:
+    # Bug-related labels to check for
+    BUG_LABELS = {'bug', 'bugfix', 'hotfix', 'regression', 'critical-bug', 'defect', 'fix'}
+    
+    # Enhanced keyword detection with confidence levels
+    BUG_KEYWORDS = {
+        'high_confidence': ['crash', 'exception', 'error', 'regression', 'broken', 'null pointer', 'memory leak'],
+        'medium_confidence': ['bug', 'bugfix', 'hotfix', 'defect'],
+        'low_confidence': ['fix', 'issue', 'problem']
+    }
+    
     def __init__(self, token: str = None):
         self.token = token or Config.GITHUB_TOKEN
         if not self.token:
@@ -25,7 +35,67 @@ class GitHubDataCollector:
     def module_from_path(path: str) -> str:
         parts = path.split('/')
         return '/'.join(parts[:2]) if len(parts) >= 2 else parts[0]
-
+    
+    def is_bug_fix_pr(self, pr) -> bool:
+        """
+        Determine if a PR is a bug fix using multiple signals:
+        1. PR labels (highest confidence)
+        2. Enhanced keyword detection with confidence levels
+        3. Issue references (if available)
+        
+        Returns True if PR is classified as a bug fix.
+        """
+        # Method 1: Check PR labels (most reliable)
+        try:
+            pr_labels = {label.name.lower() for label in pr.labels}
+            if self.BUG_LABELS & pr_labels:
+                logger.debug(f"PR #{pr.number} identified as bug fix via labels: {pr_labels}")
+                return True
+        except Exception as e:
+            logger.debug(f"Could not check labels for PR #{pr.number}: {e}")
+        
+        # Method 2: Enhanced keyword detection with confidence levels
+        title_body = (pr.title or '').lower() + ' ' + (pr.body or '').lower()
+        
+        # High confidence keywords - immediate match
+        if any(kw in title_body for kw in self.BUG_KEYWORDS['high_confidence']):
+            logger.debug(f"PR #{pr.number} identified as bug fix via high-confidence keywords")
+            return True
+        
+        # Medium confidence keywords - immediate match
+        if any(kw in title_body for kw in self.BUG_KEYWORDS['medium_confidence']):
+            logger.debug(f"PR #{pr.number} identified as bug fix via medium-confidence keywords")
+            return True
+        
+        # Low confidence keywords - require additional signals
+        if any(kw in title_body for kw in self.BUG_KEYWORDS['low_confidence']):
+            # Additional signals that boost confidence
+            signals = []
+            
+            # Signal: References an issue (closes #123, fixes #456, resolves #789)
+            if any(pattern in title_body for pattern in ['closes #', 'fixes #', 'resolves #', 'close #', 'fix #', 'resolve #']):
+                signals.append('issue_reference')
+            
+            # Signal: Small, focused change (likely a targeted fix) - but not documentation-only
+            try:
+                if pr.changed_files <= 3:
+                    # Exclude docs-only changes
+                    if not any(doc_word in title_body for doc_word in ['doc', 'readme', 'typo', 'comment']):
+                        signals.append('small_change')
+            except:
+                pass
+            
+            # Signal: Contains stack trace or error patterns
+            if any(pattern in title_body for pattern in ['traceback', 'stack trace', 'error:', 'exception:']):
+                signals.append('error_pattern')
+            
+            # If we have at least one additional signal, classify as bug fix
+            if signals:
+                logger.debug(f"PR #{pr.number} identified as bug fix via low-confidence keyword + signals: {signals}")
+                return True
+        
+        return False
+    
     def fetch_pr_data_for_repo(self, repo_name: str, since_days: int = 365, max_prs: int = 100) -> pd.DataFrame:
         """
         Fetch PRs for a single repo using the GitHub search API, filtering only merged PRs in the last `since_days`.
@@ -73,8 +143,8 @@ class GitHubDataCollector:
                 module_stats[module]['prs'] += 1
                 module_stats[module]['unique_authors'].add(pr.user.login)
 
-            title_body = (pr.title or '') + ' ' + (pr.body or '')
-            if any(w in title_body.lower() for w in ['fix', 'bug', 'bugfix', 'hotfix']):
+            # Use enhanced bug detection
+            if self.is_bug_fix_pr(pr):
                 for module in touched_modules:
                     module_stats[module]['bug_prs'] += 1
 
