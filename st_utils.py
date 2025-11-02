@@ -1,5 +1,5 @@
 """
-Streamlit UI Utilities for MaintAI Dashboard
+Streamlit UI Utilities for MaintSight Dashboard
 Contains all reusable UI components and helper functions
 """
 import streamlit as st
@@ -27,7 +27,7 @@ def render_app_header():
                            font-size: 42px; 
                            font-weight: 700;
                            text-shadow: 2px 2px 4px rgba(0,0,0,0.2);'>
-                    MaintAI
+                    MaintSight
                 </h1>
             </div>
             <p style='color: rgba(255,255,255,0.9); 
@@ -181,7 +181,7 @@ def generate_jira_labels(module_path: str) -> List[str]:
     return [
         module_path.replace("/", "-").replace(".", "-") if module_path else "unknown-module",
         filename.replace(".", "-") if filename else "unknown-file",
-        "MaintAIGenerated"
+        "MaintSightGenerated"
     ]
 
 
@@ -638,3 +638,212 @@ def generate_recommendations(avg_correction: float, disagreement_rate: float, to
         recommendations.append("✅ **Keep Monitoring**: Model is performing well - continue regular reviews")
     
     return recommendations
+
+
+def render_feature_importance(model_path: str = None) -> None:
+    """
+    Render XGBoost feature importance visualization
+    
+    Parameters:
+    - model_path: Path to the trained model file (optional, will auto-detect latest)
+    """
+    import joblib
+    from pathlib import Path
+    import plotly.graph_objects as go
+    
+    st.markdown("---")
+    st.markdown("#### 🎯 Feature Importance Analysis")
+    st.markdown("Which features drive the risk predictions the most?")
+    
+    try:
+        # Auto-detect model directory
+        if model_path is None:
+            # Try to find models in the dags/src/models/artifacts directory
+            models_dir = Path("dags/src/models/artifacts")
+            if not models_dir.exists():
+                st.warning("⚠️ Model directory not found. Train a model first.")
+                return
+            
+            # Get all model files (sorted by version number)
+            model_files = sorted(
+                models_dir.glob("xgboost_risk_model_v*.pkl"),
+                key=lambda x: int(x.stem.split('_v')[-1]),
+                reverse=True
+            )
+            
+            if not model_files:
+                st.warning("⚠️ No trained models found. Run training DAG first.")
+                st.code("airflow dags trigger risk_model_training_dag")
+                return
+            
+            model_path = str(model_files[0])  # Latest version
+            model_version = model_files[0].stem
+        else:
+            model_version = Path(model_path).stem
+        
+        # Load the model
+        model = joblib.load(model_path)
+        
+        # Check if it's an XGBoost model
+        if not hasattr(model, 'get_booster'):
+            st.error("❌ Model is not an XGBoost model. Feature importance only available for XGBoost.")
+            return
+        
+        # Get feature importance
+        booster = model.get_booster()
+        
+        # Try different importance types
+        importance_types = {
+            'weight': 'Number of times feature used in splits',
+            'gain': 'Average gain when feature is used',
+            'cover': 'Average coverage of feature when used'
+        }
+        
+        # Select importance type
+        col_info, col_selector = st.columns([3, 1])
+        with col_selector:
+            importance_type = st.selectbox(
+                "Importance Type",
+                options=list(importance_types.keys()),
+                index=1,  # Default to 'gain'
+                help="Different ways to measure feature importance"
+            )
+        
+        with col_info:
+            st.info(f"**{importance_type.upper()}**: {importance_types[importance_type]}")
+            st.caption(f"📦 Model: `{model_version}` | 🔢 Total Features: {len(model.feature_names_in_)}")
+        
+        # Get importance scores
+        importance_dict = booster.get_score(importance_type=importance_type)
+        
+        if not importance_dict:
+            st.warning("⚠️ No feature importance data available in this model.")
+            return
+        
+        # Sort by importance
+        sorted_features = sorted(importance_dict.items(), key=lambda x: x[1], reverse=True)
+        
+        # Prepare data for visualization
+        features = [f[0] for f in sorted_features]
+        scores = [f[1] for f in sorted_features]
+        
+        # Normalize scores to percentages for better readability
+        total_score = sum(scores)
+        percentages = [(score / total_score * 100) if total_score > 0 else 0 for score in scores]
+        
+        # Create two columns for charts
+        col_chart, col_table = st.columns([2, 1])
+        
+        with col_chart:
+            # Create horizontal bar chart with Plotly
+            fig = go.Figure(go.Bar(
+                x=scores,
+                y=features,
+                orientation='h',
+                marker=dict(
+                    color=scores,
+                    colorscale='Blues',
+                    showscale=True,
+                    colorbar=dict(title="Importance")
+                ),
+                text=[f"{p:.1f}%" for p in percentages],
+                textposition='auto',
+                hovertemplate='<b>%{y}</b><br>Score: %{x:.2f}<br>%{text}<extra></extra>'
+            ))
+            
+            fig.update_layout(
+                title=f"Feature Importance ({importance_type.upper()})",
+                xaxis_title="Importance Score",
+                yaxis_title="Feature",
+                height=max(400, len(features) * 25),  # Dynamic height based on feature count
+                yaxis={'categoryorder': 'total ascending'},
+                showlegend=False,
+                hovermode='closest'
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
+        
+        with col_table:
+            st.markdown("**📊 Top 10 Features**")
+            
+            # Create dataframe for top features
+            import pandas as pd
+            top_features_df = pd.DataFrame({
+                'Feature': features[:10],
+                'Score': scores[:10],
+                'Share': [f"{p:.1f}%" for p in percentages[:10]]
+            })
+            
+            st.dataframe(
+                top_features_df,
+                use_container_width=True,
+                hide_index=True
+            )
+            
+            # Feature importance insights
+            st.markdown("**💡 Insights**")
+            
+            # Top feature
+            top_feature = features[0]
+            top_pct = percentages[0]
+            st.markdown(f"• **Most Important**: `{top_feature}` ({top_pct:.1f}%)")
+            
+            # Top 3 combined
+            top3_pct = sum(percentages[:3])
+            st.markdown(f"• **Top 3 Combined**: {top3_pct:.1f}% of total importance")
+            
+            # Feature diversity
+            if len(features) > 5:
+                top5_pct = sum(percentages[:5])
+                if top5_pct > 80:
+                    st.markdown(f"• ⚠️ **High Concentration**: Top 5 features account for {top5_pct:.1f}% - model heavily relies on few features")
+                elif top5_pct < 50:
+                    st.markdown(f"• ✅ **Good Diversity**: Top 5 features only {top5_pct:.1f}% - model uses many features")
+                else:
+                    st.markdown(f"• 📊 **Balanced**: Top 5 features account for {top5_pct:.1f}%")
+        
+        # Feature descriptions (expandable)
+        with st.expander("📖 Feature Descriptions"):
+            st.markdown("""
+            **Common Features:**
+            - `bug_ratio`: Proportion of PRs that were bug fixes (0-1)
+            - `churn_per_pr`: Average lines changed per PR
+            - `lines_per_pr`: Average total lines modified per PR
+            - `lines_per_author`: Average lines per developer
+            - `author_concentration`: Inverse of unique authors (1/authors)
+            - `add_del_ratio`: Ratio of additions to deletions
+            - `deletion_ratio`: Proportion of changes that are deletions
+            - `bug_density`: Bugs per line of code
+            - `collaboration_complexity`: Authors × churn per PR
+            
+            See `FEATURES_DOCUMENTATION.md` for complete details.
+            """)
+        
+        # Download option
+        st.markdown("---")
+        col_download, col_note = st.columns([1, 3])
+        with col_download:
+            # Prepare CSV
+            feature_importance_df = pd.DataFrame({
+                'Feature': features,
+                'Score': scores,
+                'Percentage': percentages
+            })
+            csv = feature_importance_df.to_csv(index=False)
+            st.download_button(
+                label="📥 Download CSV",
+                data=csv,
+                file_name=f"feature_importance_{model_version}.csv",
+                mime="text/csv"
+            )
+        with col_note:
+            st.caption("💡 Use feature importance to understand model behavior and improve feature engineering")
+        
+    except FileNotFoundError:
+        st.error(f"❌ Model file not found at: `{model_path}`")
+        st.info("Run the training DAG to create a model first.")
+    except Exception as e:
+        st.error(f"❌ Error loading feature importance: {e}")
+        import traceback
+        with st.expander("🔍 Debug Info"):
+            st.code(traceback.format_exc())
