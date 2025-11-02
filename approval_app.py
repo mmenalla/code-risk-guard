@@ -1,5 +1,5 @@
 """
-MaintAI - AI-Powered Technical Debt Risk Management Dashboard
+MaintSight - AI-Powered Technical Debt Risk Management Dashboard
 Main Streamlit application entry point
 """
 import streamlit as st
@@ -34,7 +34,7 @@ jira_client = JiraClient()
 
 # ============= PAGE SETUP =============
 
-st.set_page_config(page_title="MaintAI - AI Risk Model Dashboard", layout="wide", page_icon="🤖")
+st.set_page_config(page_title="MaintSight - AI Risk Model Dashboard", layout="wide", page_icon="🤖")
 
 stu.render_app_header()
 
@@ -514,3 +514,8 @@ with tab3:
         recommendations = stu.generate_recommendations(avg_correction, disagreement_rate, len(feedback_df), over_predictions, under_predictions)
         for rec in recommendations:
             st.markdown(rec)
+        
+        # Feature Importance Analysis
+        stu.render_feature_importance()
+
+
