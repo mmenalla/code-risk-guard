@@ -404,6 +404,9 @@ with tab3:
     predictions = list(pred_collection.find({}))
     feedback_records = list(feedback_collection.find({}))
     
+    # Feature Importance Analysis (always show, independent of predictions/feedback)
+    stu.render_feature_importance()
+    
     if not feedback_records:
         st.info("📊 No feedback data yet. Manager corrections will appear here once you adjust risk scores.")
     else:
@@ -514,8 +517,5 @@ with tab3:
         recommendations = stu.generate_recommendations(avg_correction, disagreement_rate, len(feedback_df), over_predictions, under_predictions)
         for rec in recommendations:
             st.markdown(rec)
-        
-        # Feature Importance Analysis
-        stu.render_feature_importance()
 
 

@@ -3,7 +3,9 @@ from pathlib import Path
 from dotenv import load_dotenv
 import json
 
-load_dotenv()
+# Load .env file from src directory (dags/src/.env)
+env_path = Path(__file__).resolve().parent.parent / ".env"
+load_dotenv(dotenv_path=env_path)
 
 class Config:
     BASE_DIR = Path(__file__).resolve().parent.parent
@@ -42,3 +44,14 @@ class Config:
 
     # LLM
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+    # SonarQube
+    # Use http://sonarqube:9000 for Docker container-to-container communication
+    # Use http://localhost:9000 for local testing outside Docker
+    SONARQUBE_URL = os.getenv("SONARQUBE_URL", "http://sonarqube:9000")
+    SONARQUBE_TOKEN = os.getenv("SONARQUBE_TOKEN")
+    SONARQUBE_PROJECT_KEYS = os.getenv("SONARQUBE_PROJECT_KEYS", "").strip()
+    try:
+        SONARQUBE_PROJECT_KEYS = json.loads(SONARQUBE_PROJECT_KEYS) if SONARQUBE_PROJECT_KEYS else []
+    except json.JSONDecodeError:
+        SONARQUBE_PROJECT_KEYS = [key.strip() for key in SONARQUBE_PROJECT_KEYS.split(",") if key.strip()]

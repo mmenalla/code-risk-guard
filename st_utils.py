@@ -657,29 +657,42 @@ def render_feature_importance(model_path: str = None) -> None:
     
     try:
         # Auto-detect model directory
-        if model_path is None:
-            # Try to find models in the dags/src/models/artifacts directory
-            models_dir = Path("dags/src/models/artifacts")
-            if not models_dir.exists():
-                st.warning("⚠️ Model directory not found. Train a model first.")
-                return
+        models_dir = Path("dags/src/models/artifacts")
+        if not models_dir.exists():
+            st.warning("⚠️ Model directory not found. Train a model first.")
+            return
+        
+        # Get all model files (sorted by version number, latest first)
+        model_files = sorted(
+            models_dir.glob("xgboost_risk_model_v*.pkl"),
+            key=lambda x: int(x.stem.split('_v')[-1]),
+            reverse=True
+        )
+        
+        if not model_files:
+            st.warning("⚠️ No trained models found. Run training DAG first.")
+            st.code("airflow dags trigger risk_model_training_dag")
+            return
+        
+        # Model Selection Dropdown
+        col_model_select, col_spacer = st.columns([2, 2])
+        with col_model_select:
+            # Create display names for dropdown
+            model_options = {str(f): f.stem for f in model_files}
+            model_display_names = [f"{model_options[str(f)]} (Latest)" if i == 0 else model_options[str(f)] 
+                                   for i, f in enumerate(model_files)]
             
-            # Get all model files (sorted by version number)
-            model_files = sorted(
-                models_dir.glob("xgboost_risk_model_v*.pkl"),
-                key=lambda x: int(x.stem.split('_v')[-1]),
-                reverse=True
+            selected_display = st.selectbox(
+                "📦 Select Model",
+                options=model_display_names,
+                index=0,  # Default to latest
+                help="Choose which trained model to analyze"
             )
             
-            if not model_files:
-                st.warning("⚠️ No trained models found. Run training DAG first.")
-                st.code("airflow dags trigger risk_model_training_dag")
-                return
-            
-            model_path = str(model_files[0])  # Latest version
-            model_version = model_files[0].stem
-        else:
-            model_version = Path(model_path).stem
+            # Get the actual file path from selection
+            selected_index = model_display_names.index(selected_display)
+            model_path = str(model_files[selected_index])
+            model_version = model_files[selected_index].stem
         
         # Load the model
         model = joblib.load(model_path)

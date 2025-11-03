@@ -52,12 +52,22 @@ def generate_features(**context):
 
     fe = FeatureEngineer()
     feature_df = fe.transform(df)
+    
+    # Drop features that are not used in training (v20+)
+    # Training drops these before model training
+    old_features = ['bug_ratio', 'churn_per_pr', 'author_concentration']
+    dropped = [c for c in old_features if c in feature_df.columns]
+    feature_df = feature_df.drop(columns=dropped, errors='ignore')
+    if dropped:
+        logger.info(f"Dropped features not used in training: {dropped}")
+    
+    logger.info(f"✅ Using GitHub PR features only (same as training v20+)")
 
     feature_path = Config.DATA_DIR / "inference_features.parquet"
     feature_df.to_parquet(feature_path, index=False)
 
     context['ti'].xcom_push(key='inference_feature_path', value=str(feature_path))
-    logger.info(f"Generated features for {len(feature_df)} records. Saved to {feature_path}")
+    logger.info(f"Generated {len(feature_df.columns)} features for {len(feature_df)} records. Saved to {feature_path}")
 
 
 def predict_risk(**context):

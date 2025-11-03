@@ -98,8 +98,26 @@ services:
       - local
     restart: always
 
+  sonarqube:
+    image: sonarqube:community
+    container_name: maintai_sonarqube
+    environment:
+      - SONAR_ES_BOOTSTRAP_CHECKS_DISABLE=true
+    ports:
+      - "9000:9000"
+    volumes:
+      - sonarqube_data:/opt/sonarqube/data
+      - sonarqube_logs:/opt/sonarqube/logs
+      - sonarqube_extensions:/opt/sonarqube/extensions
+    networks:
+      - local
+    restart: unless-stopped
+
 volumes:
   mongo_data:
+  sonarqube_data:
+  sonarqube_logs:
+  sonarqube_extensions:
 
 networks:
   local:

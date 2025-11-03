@@ -116,10 +116,10 @@ class GitHubDataCollector:
         logger.info(f"Total PRs found by search: {len(prs)}")
 
         # Limit to max_prs
-        if len(prs) > max_prs:
-            import random
-            prs = random.sample(prs, max_prs)
-            logger.info(f"Sampling {max_prs} PRs to process")
+        # if len(prs) > max_prs:
+        #     import random
+        #     prs = random.sample(prs, max_prs)
+        #     logger.info(f"Sampling {max_prs} PRs to process")
 
         module_stats = defaultdict(lambda: {
             "lines_added": 0, "lines_removed": 0, "prs": 0,
