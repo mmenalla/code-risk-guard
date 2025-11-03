@@ -83,6 +83,8 @@ def get_last_processed_date(mongo_uri, mongo_db, mongo_collection):
 
 
 def log_model_metrics(metrics: dict, model_name: str = "xgboost_risk_model",
+                      label_source_filter: str = "all",
+                      training_samples: int = 0,
                       mongo_uri: str = "mongodb://admin:admin@mongo:27017/risk_model_db?authSource=admin",
                       db_name: str = "risk_model_db",
                       collection_name: str = "model_metrics"):
@@ -98,11 +100,13 @@ def log_model_metrics(metrics: dict, model_name: str = "xgboost_risk_model",
         "mae": float(metrics.get("mae")),
         "mse": float(metrics.get("mse")),
         "r2": float(metrics.get("r2")),
+        "label_source_filter": label_source_filter,  # NEW: Track which labels were used
+        "training_samples": training_samples,        # NEW: Number of samples used
         "timestamp": datetime.utcnow()
     }
 
     collection.insert_one(record)
-    logger.info(f"Logged metrics for model '{model_name}' at {record['timestamp']}")
+    logger.info(f"Logged metrics for model '{model_name}' (label_source={label_source_filter}, samples={training_samples}) at {record['timestamp']}")
 
 
 def log_model_predictions(

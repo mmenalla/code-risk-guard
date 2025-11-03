@@ -211,3 +211,168 @@ class LabelCreator:
                 base_score = (base_score + density_boost).clip(0, 1)
         
         return base_score
+
+
+def create_labels_with_sonarqube(
+    df: pd.DataFrame,
+    sonarqube_url: str = None,
+    sonarqube_token: str = None,
+    mongo_uri: str = None,
+    mongo_db: str = None,
+    feedback_collection: str = "risk_feedback",
+    use_manager_feedback: bool = True,
+    fallback_to_heuristic: bool = True
+) -> pd.DataFrame:
+    """
+    Create labels using SonarQube code quality metrics with fallback strategy.
+    
+    Priority order:
+    1. Manager feedback (if available and use_manager_feedback=True)
+    2. SonarQube metrics (if available)
+    3. Heuristic scores (fallback)
+    
+    Parameters:
+    - df: DataFrame with features (must have 'module' and 'repo_name' columns)
+    - sonarqube_url: SonarQube server URL (defaults to config)
+    - sonarqube_token: SonarQube auth token (defaults to config)
+    - mongo_uri: MongoDB connection for manager feedback
+    - mongo_db: MongoDB database name
+    - feedback_collection: Collection name for manager feedback
+    - use_manager_feedback: Whether to use manager feedback as highest priority
+    - fallback_to_heuristic: Use heuristic scoring when SonarQube unavailable
+    
+    Returns:
+    - DataFrame with 'needs_maintenance', 'label_source', and 'risk_category' columns
+    """
+    from src.utils.config import Config
+    from src.data.sonarqube_client import SonarQubeClient
+    
+    df = df.copy()
+    df['prs'] = df['prs'].replace(0, 1)
+    
+    # Initialize tracking columns
+    df['needs_maintenance'] = None
+    df['label_source'] = None
+    df['feedback_count'] = 0
+    
+    # Priority 1: Manager Feedback
+    if use_manager_feedback and mongo_uri:
+        labeler = LabelCreator(
+            mongo_uri=mongo_uri,
+            mongo_db=mongo_db,
+            feedback_collection=feedback_collection,
+            use_manager_feedback=True,
+            fallback_to_heuristic=False
+        )
+        feedback_df = labeler._fetch_feedback_labels(df['module'].tolist())
+        
+        if not feedback_df.empty:
+            logger.info(f"Found manager feedback for {len(feedback_df)} modules")
+            df = df.merge(
+                feedback_df[['module', 'manager_risk', 'feedback_count']], 
+                on='module', 
+                how='left'
+            )
+            # Use manager risk where available
+            mask = df['manager_risk'].notna()
+            df.loc[mask, 'needs_maintenance'] = df.loc[mask, 'manager_risk']
+            df.loc[mask, 'label_source'] = 'manager'
+            df = df.drop(columns=['manager_risk'], errors='ignore')
+    
+    # Priority 2: SonarQube Metrics
+    sonarqube_url = sonarqube_url or Config.SONARQUBE_URL
+    sonarqube_token = sonarqube_token or Config.SONARQUBE_TOKEN
+    
+    if sonarqube_url and sonarqube_token and Config.SONARQUBE_PROJECT_KEYS:
+        try:
+            logger.info(f"Initializing SonarQube client at {sonarqube_url}")
+            sonarqube_client = SonarQubeClient(sonarqube_url, sonarqube_token)
+            
+            # Create mapping from repo_name to project_key
+            repo_to_project = {}
+            if len(Config.GITHUB_REPOS) == len(Config.SONARQUBE_PROJECT_KEYS):
+                repo_to_project = dict(zip(Config.GITHUB_REPOS, Config.SONARQUBE_PROJECT_KEYS))
+            else:
+                logger.warning(f"Mismatch: {len(Config.GITHUB_REPOS)} GitHub repos vs {len(Config.SONARQUBE_PROJECT_KEYS)} SonarQube projects")
+            
+            sonarqube_count = 0
+            for repo_name in df['repo_name'].unique():
+                if repo_name not in repo_to_project:
+                    logger.warning(f"No SonarQube project key for repo: {repo_name}")
+                    continue
+                
+                project_key = repo_to_project[repo_name]
+                repo_mask = df['repo_name'] == repo_name
+                
+                # Get files for this repo that don't already have labels
+                unlabeled_mask = repo_mask & df['needs_maintenance'].isna()
+                repo_files = df[unlabeled_mask]['module'].tolist()
+                
+                logger.info(f"Fetching SonarQube metrics for {len(repo_files)} files in {repo_name} (project: {project_key})")
+                
+                for file_path in repo_files:
+                    file_mask = (df['repo_name'] == repo_name) & (df['module'] == file_path)
+                    
+                    # Fetch SonarQube metrics for file
+                    metrics = sonarqube_client.get_file_measures(project_key, file_path)
+                    
+                    if metrics:
+                        # Calculate maintainability score
+                        score = sonarqube_client.calculate_maintainability_score(metrics)
+                        
+                        df.loc[file_mask, 'needs_maintenance'] = score
+                        df.loc[file_mask, 'label_source'] = 'sonarqube'
+                        sonarqube_count += 1
+                        
+                        # Store raw metrics (optional, for analysis)
+                        for metric_key, metric_value in metrics.items():
+                            col_name = f'sonarqube_{metric_key}'
+                            if col_name not in df.columns:
+                                df[col_name] = None
+                            df.loc[file_mask, col_name] = metric_value
+            
+            logger.info(f"✅ Applied SonarQube labels to {sonarqube_count} files")
+            
+        except Exception as e:
+            logger.error(f"❌ Error fetching SonarQube metrics: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+    else:
+        logger.warning("SonarQube not configured (missing URL, token, or project keys)")
+    
+    # Priority 3: Heuristic Fallback
+    if fallback_to_heuristic:
+        mask = df['needs_maintenance'].isna()
+        heuristic_count = mask.sum()
+        
+        if heuristic_count > 0:
+            logger.info(f"Using heuristic labels for {heuristic_count} modules without SonarQube/feedback data")
+            labeler = LabelCreator(use_manager_feedback=False, fallback_to_heuristic=True)
+            df.loc[mask, 'needs_maintenance'] = labeler._compute_heuristic_score(df[mask])
+            df.loc[mask, 'label_source'] = 'heuristic'
+    
+    # Priority 4: Heuristic for any remaining NaN values (even when fallback_to_heuristic=False)
+    # This handles edge cases like non-Python files that SonarQube doesn't analyze
+    remaining_na = df['needs_maintenance'].isna().sum()
+    if remaining_na > 0:
+        logger.info(f"Using heuristic for {remaining_na} files without SonarQube metrics (non-Python files)")
+        labeler = LabelCreator(use_manager_feedback=False, fallback_to_heuristic=True)
+        mask = df['needs_maintenance'].isna()
+        df.loc[mask, 'needs_maintenance'] = labeler._compute_heuristic_score(df[mask])
+        df.loc[mask, 'label_source'] = 'heuristic'
+
+    # Create risk categories with adjusted thresholds for better class balance
+    # Thresholds optimized for SonarQube data distribution (85 high-risk samples vs 7 before)
+    df["risk_category"] = pd.cut(
+        df["needs_maintenance"],
+        bins=[0, 0.22, 0.47, 0.65, 1.0],
+        labels=["no-risk", "low-risk", "medium-risk", "high-risk"],
+        include_lowest=True
+    )
+    
+    # Log label source distribution
+    label_counts = df['label_source'].value_counts()
+    logger.info(f"📊 Label sources: {label_counts.to_dict()}")
+    
+    return df
+

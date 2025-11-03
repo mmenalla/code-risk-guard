@@ -35,3 +35,14 @@ TAB1_BEFORE_AFTER.md
 TAB1_BUTTONS_EXPLAINED.md
 TAB1_UI_IMPROVEMENTS.md
 __pycache__/
+.env.mcp.example
+FEATURE_IMPORTANCE_GUIDE.md
+dags/src/llm/mcp_agent.py
+dags/src/llm/mcp_context.py
+dags/src/llm/mcp_memory.py
+dags/src/llm/mcp_tools.py
+test_mcp_integration.py
+.env.sonarqube.example
+sonarqube-analysis/
+test_new_scoring.py
+test_sonarqube_integration.py
