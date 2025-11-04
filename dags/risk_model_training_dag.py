@@ -26,6 +26,7 @@ LABEL_SOURCE_FILTER = os.getenv("LABEL_SOURCE_FILTER", "all").lower()
 
 
 def fetch_repo_pr_data(repo_name: str, **context):
+    """Fetch PR data for a single repository (only used when USE_COMMITS=false)"""
     collector = GitHubDataCollector()
     logger.info(f"REPO: {repo_name}")
     df = collector.fetch_pr_data_for_repo(repo_name, since_days=Config.SINCE_DAYS, max_prs=Config.MAX_PRS)
@@ -37,7 +38,33 @@ def fetch_repo_pr_data(repo_name: str, **context):
     logger.info(f"Saved PR data for {repo_name}, {len(df)} rows")
 
 
+def fetch_commit_data(**context):
+    """Fetch commit data from local repository (only used when USE_COMMITS=true)"""
+    from src.data.git_commit_client import GitCommitCollector
+    
+    if not Config.REPO_PATH:
+        raise ValueError("REPO_PATH is required when USE_COMMITS=true")
+    
+    logger.info(f"🔄 Fetching commits from local repository: {Config.REPO_PATH}")
+    logger.info(f"Branch: {Config.BRANCH_NAME}, Max commits: {Config.MAX_COMMITS}")
+    
+    collector = GitCommitCollector(
+        repo_path=Config.REPO_PATH,
+        branch=Config.BRANCH_NAME
+    )
+    raw_df = collector.fetch_commit_data(max_commits=Config.MAX_COMMITS)
+    
+    os.makedirs(Config.DATA_DIR, exist_ok=True)
+    raw_path = Config.DATA_DIR / "raw_commit_data.parquet"
+    raw_df.to_parquet(raw_path, index=False)
+    context['ti'].xcom_push(key='raw_data_path', value=str(raw_path))
+    
+    logger.info(f"✅ Saved commit data: {len(raw_df)} files from {raw_df['prs'].sum():.0f} commits")
+    logger.info(f"Date range: {raw_df['created_at'].min()} to {raw_df['created_at'].max()}")
+
+
 def aggregate_raw_data(**context):
+    """Aggregate raw data from multiple GitHub repos (only used when USE_COMMITS=false)"""
     all_paths = []
     for repo in Config.GITHUB_REPOS:
         path = context['ti'].xcom_pull(key=f'raw_{repo}')
@@ -194,7 +221,7 @@ def train_model(**context):
     logger.info("🔧 Using GitHub PR features only (SonarQube used for labeling only)...")
     drop_cols = [
         'module',
-        'repo_name', 'created_at', 'filename', 'label_source', 
+        'repo_name', 'created_at', 'last_modified', 'filename', 'label_source', 
         'risk_category', 'feedback_count', 'last_feedback_at',
         # SonarQube raw metrics (used for labeling, not as features)
         'sonarqube_coverage', 'sonarqube_bugs', 'sonarqube_complexity',
@@ -212,11 +239,11 @@ def train_model(**context):
     
     logger.info(f"🎯 Training on {training_samples} samples with {len(df.columns)-1} features")
     logger.info(f"📋 Features: {list(df.columns)}")
-    logger.info(f"⚖️  Class weighting: ENABLED (handling imbalanced data)")
+    logger.info(f"🔄 Training regression model with needs_maintenance scores")
     
     trainer = RiskModelTrainer()
-    # Enable class weighting for better handling of imbalanced data
-    model, model_name, X_test, y_test = trainer.train(df, use_class_weights=True)
+    # Train pure regression model without class weighting
+    model, model_name, X_test, y_test = trainer.train(df, use_class_weights=False)
 
     context['ti'].xcom_push(key='X_test', value=X_test.to_dict(orient='list'))
     context['ti'].xcom_push(key='y_test', value=y_test.tolist())
@@ -258,7 +285,7 @@ default_args = {
 
 with DAG(
     dag_id="risk_model_training_dag",
-    description="Train XGBoost risk model from multiple GitHub repos",
+    description="Train XGBoost risk model from GitHub PRs or local commits",
     schedule="@weekly",
     start_date=datetime(2025, 1, 1),
     catchup=False,
@@ -267,49 +294,87 @@ with DAG(
 
     if FETCH_NEW_DATA:
         # Full pipeline: fetch data, engineer features, label, train, evaluate
-        logger.info("FETCH_NEW_DATA=True: Running full data collection pipeline")
+        if Config.USE_COMMITS:
+            # COMMIT-BASED MODE: Fetch from local git repository
+            logger.info(f"🔄 COMMIT MODE: Repository={Config.REPO_PATH}, Branch={Config.BRANCH_NAME}")
+            
+            fetch_commits_task = PythonOperator(
+                task_id="fetch_commit_data",
+                python_callable=fetch_commit_data,
+                provide_context=True
+            )
+
+            feature_task = PythonOperator(
+                task_id="feature_engineering",
+                python_callable=feature_engineering,
+                provide_context=True
+            )
+
+            label_task = PythonOperator(
+                task_id="label_data",
+                python_callable=label_data,
+                provide_context=True
+            )
+
+            train_task = PythonOperator(
+                task_id="train_model",
+                python_callable=train_model,
+                provide_context=True
+            )
+
+            evaluate_task = PythonOperator(
+                task_id="evaluate_model",
+                python_callable=evaluate_model,
+                provide_context=True
+            )
+
+            fetch_commits_task >> feature_task >> label_task >> train_task >> evaluate_task
         
-        # --- TaskGroup: fetch all repos ---
-        with TaskGroup("github_pr_fetch") as fetch_group:
-            for repo in Config.GITHUB_REPOS:
-                PythonOperator(
-                    task_id=f"fetch_{repo.replace('/', '_')}",
-                    python_callable=fetch_repo_pr_data,
-                    op_kwargs={"repo_name": repo},
-                    provide_context=True
-                )
+        else:
+            # PR-BASED MODE: Fetch from GitHub API
+            logger.info(f"🔄 PR MODE: Repositories={Config.GITHUB_REPOS}")
+            
+            # --- TaskGroup: fetch all repos ---
+            with TaskGroup("github_pr_fetch") as fetch_group:
+                for repo in Config.GITHUB_REPOS:
+                    PythonOperator(
+                        task_id=f"fetch_{repo.replace('/', '_')}",
+                        python_callable=fetch_repo_pr_data,
+                        op_kwargs={"repo_name": repo},
+                        provide_context=True
+                    )
 
-        aggregate_task = PythonOperator(
-            task_id="aggregate_raw_data",
-            python_callable=aggregate_raw_data,
-            provide_context=True
-        )
+            aggregate_task = PythonOperator(
+                task_id="aggregate_raw_data",
+                python_callable=aggregate_raw_data,
+                provide_context=True
+            )
 
-        feature_task = PythonOperator(
-            task_id="feature_engineering",
-            python_callable=feature_engineering,
-            provide_context=True
-        )
+            feature_task = PythonOperator(
+                task_id="feature_engineering",
+                python_callable=feature_engineering,
+                provide_context=True
+            )
 
-        label_task = PythonOperator(
-            task_id="label_data",
-            python_callable=label_data,
-            provide_context=True
-        )
+            label_task = PythonOperator(
+                task_id="label_data",
+                python_callable=label_data,
+                provide_context=True
+            )
 
-        train_task = PythonOperator(
-            task_id="train_model",
-            python_callable=train_model,
-            provide_context=True
-        )
+            train_task = PythonOperator(
+                task_id="train_model",
+                python_callable=train_model,
+                provide_context=True
+            )
 
-        evaluate_task = PythonOperator(
-            task_id="evaluate_model",
-            python_callable=evaluate_model,
-            provide_context=True
-        )
+            evaluate_task = PythonOperator(
+                task_id="evaluate_model",
+                python_callable=evaluate_model,
+                provide_context=True
+            )
 
-        fetch_group >> aggregate_task >> feature_task >> label_task >> train_task >> evaluate_task
+            fetch_group >> aggregate_task >> feature_task >> label_task >> train_task >> evaluate_task
     
     else:
         # Skip data collection: train directly from MongoDB data
