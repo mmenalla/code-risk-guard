@@ -36,6 +36,10 @@ class Config:
     # GitHub Data Collection
     SINCE_DAYS = int(os.getenv("SINCE_DAYS", "150"))
     MAX_PRS = int(os.getenv("MAX_PRS", "50"))
+    MAX_COMMITS = int(os.getenv("MAX_COMMITS", "300"))
+    USE_COMMITS = os.getenv("USE_COMMITS", "True").lower() in ("true", "1", "yes")
+    REPO_PATH=os.getenv("REPO_PATH", "/repos/readlike-me")
+    BRANCH_NAME = os.getenv("BRANCH_NAME", "main")
 
     # Ticket Generation
     GENERATE_TICKETS = os.getenv("GENERATE_TICKETS", "True").lower() in ("true", "1", "yes")

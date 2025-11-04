@@ -27,14 +27,14 @@ class RiskModelTrainer:
         else:
             self.logger.info("No existing model found. Training from scratch.")
 
-    def train(self, df: pd.DataFrame, feature_cols: list = None, use_class_weights: bool = True):
+    def train(self, df: pd.DataFrame, feature_cols: list = None, use_class_weights: bool = False):
         """
-        Train model on the full incremental dataset with optional class weighting
+        Train regression model on the full incremental dataset
         
         Parameters:
         - df: Training dataframe
         - feature_cols: List of feature columns to use
-        - use_class_weights: Whether to apply sample weights based on risk categories
+        - use_class_weights: Deprecated parameter (kept for backward compatibility, ignored)
         """
         df = df.copy()
         feature_cols = feature_cols or [
@@ -45,29 +45,13 @@ class RiskModelTrainer:
         X = df[feature_cols]
         y = df['needs_maintenance']
 
-        # Calculate sample weights based on risk categories for class imbalance
-        sample_weights = None
-        stratify_labels = None
-        if use_class_weights:
-            sample_weights = self._calculate_sample_weights(y)
-            stratify_labels = self._get_risk_categories(y)
-            self.logger.info(f"✅ Using class weighting to handle imbalanced data")
-            self.logger.info(f"   Sample weight stats: min={np.min(sample_weights):.2f}, "
-                           f"max={np.max(sample_weights):.2f}, mean={np.mean(sample_weights):.2f}")
+        # Simple train/test split for regression
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42
+        )
 
-        # Stratified split to ensure all risk categories in train/test
-        if use_class_weights:
-            X_train, X_test, y_train, y_test, weights_train, weights_test = train_test_split(
-                X, y, sample_weights, test_size=0.2, random_state=42, 
-                stratify=stratify_labels
-            )
-        else:
-            X_train, X_test, y_train, y_test = train_test_split(
-                X, y, test_size=0.2, random_state=42
-            )
-            weights_train = None
 
-        # Enhanced hyperparameters for better performance
+        # Enhanced hyperparameters for regression
         self.model = xgb.XGBRegressor(
             objective='reg:squarederror',
             eval_metric='rmse',
@@ -83,21 +67,12 @@ class RiskModelTrainer:
             random_state=42
         )
         
-        # Fit with sample weights if enabled
-        # Use early stopping to prevent overfitting
-        if use_class_weights and weights_train is not None:
-            self.model.fit(
-                X_train, y_train, 
-                sample_weight=weights_train,
-                eval_set=[(X_test, y_test)],
-                verbose=False
-            )
-        else:
-            self.model.fit(
-                X_train, y_train,
-                eval_set=[(X_test, y_test)],
-                verbose=False
-            )
+        # Train with early stopping to prevent overfitting
+        self.model.fit(
+            X_train, y_train,
+            eval_set=[(X_test, y_test)],
+            verbose=False
+        )
         
         # Log training info
         self.logger.info(f"📊 Training completed with {self.model.n_estimators} trees")
@@ -114,64 +89,9 @@ class RiskModelTrainer:
             for idx, row in feature_importance.head(5).iterrows():
                 self.logger.info(f"   {row['feature']:25s}: {row['importance']:.4f}")
 
-
         model_name = self.save_model()
         return self.model, model_name, X_test, y_test
-    
-    def _calculate_sample_weights(self, y: pd.Series) -> np.ndarray:
-        """
-        Calculate sample weights based on risk categories to handle class imbalance
-        
-        Uses inverse frequency weighting:
-        - More weight to minority classes (high-risk, medium-risk)
-        - Less weight to majority classes (no-risk, low-risk)
-        """
-        # Create risk categories from continuous scores
-        risk_categories = self._get_risk_categories(y)
-        
-        # Count samples per category
-        category_counts = risk_categories.value_counts()
-        total_samples = len(y)
-        n_classes = len(category_counts)
-        
-        # Calculate inverse frequency weights
-        # weight = total_samples / (n_classes * count_for_class)
-        weights_dict = {}
-        for category, count in category_counts.items():
-            weight = total_samples / (n_classes * count)
-            weights_dict[category] = weight
-        
-        # Log weights for transparency
-        self.logger.info(f"📊 Class weights calculated:")
-        for category in ['no-risk', 'low-risk', 'medium-risk', 'high-risk']:
-            if category in weights_dict:
-                count = category_counts[category]
-                pct = count / total_samples * 100
-                self.logger.info(f"   {category:15s}: weight={weights_dict[category]:.2f} "
-                               f"(n={count}, {pct:.1f}%)")
-        
-        # Map weights to samples
-        sample_weights = risk_categories.map(weights_dict).values
-        return sample_weights
-    
-    def _get_risk_categories(self, y: pd.Series) -> pd.Series:
-        """
-        Convert continuous risk scores to categorical risk levels
-        
-        Thresholds optimized for SonarQube data distribution:
-        - [0, 0.22]: no-risk (27.6%)
-        - [0.22, 0.47]: low-risk (41.9%)
-        - [0.47, 0.65]: medium-risk (27.3%)
-        - [0.65, 1.0]: high-risk (3.2%)
-        
-        This gives 85 high-risk samples vs 7 with old thresholds.
-        """
-        return pd.cut(
-            y,
-            bins=[0, 0.22, 0.47, 0.65, 1.0],
-            labels=['no-risk', 'low-risk', 'medium-risk', 'high-risk'],
-            include_lowest=True
-        )
+
 
     # def evaluate(self, X_test: pd.DataFrame, y_test: pd.Series, model_name: str):
     #     """Evaluate the trained model"""

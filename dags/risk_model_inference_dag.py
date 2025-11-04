@@ -25,21 +25,47 @@ REPO = os.getenv("GITHUB_REPO")
 # ---------------------------------------------------------------------
 
 def fetch_latest_github_data(**context):
-    """Fetch latest PRs using GitHub search API (merged in last N days)."""
-    logger.info(f"Fetching PRs merged in the last {Config.SINCE_DAYS} days...")
-    collector = GitHubDataCollector()
-    raw_df = collector.fetch_pr_data_for_repo(repo_name=REPO, since_days=Config.SINCE_DAYS)
-
-    if raw_df.empty:
-        logger.warning("No PRs fetched from GitHub.")
-        return
-
+    """Fetch latest data: either commits (from local repo) or PRs (from GitHub API)."""
     os.makedirs(Config.DATA_DIR, exist_ok=True)
     raw_path = Config.DATA_DIR / "inference_raw_data.parquet"
-    raw_df.to_parquet(raw_path, index=False)
+    
+    if Config.USE_COMMITS:
+        # Fetch commit data from local repository
+        from src.data.git_commit_client import GitCommitCollector
+        
+        if not Config.REPO_PATH:
+            raise ValueError("REPO_PATH is required when USE_COMMITS=true")
+        
+        logger.info(f"🔄 Fetching commits from local repository: {Config.REPO_PATH}")
+        logger.info(f"Branch: {Config.BRANCH_NAME}, Max commits: {Config.MAX_COMMITS}")
+        
+        collector = GitCommitCollector(
+            repo_path=Config.REPO_PATH,
+            branch=Config.BRANCH_NAME
+        )
+        raw_df = collector.fetch_commit_data(max_commits=Config.MAX_COMMITS)
+        
+        if raw_df.empty:
+            logger.warning("No commits fetched from local repository.")
+            return
+        
+        raw_df.to_parquet(raw_path, index=False)
+        logger.info(f"✅ Saved commit data: {len(raw_df)} files from {raw_df['prs'].sum():.0f} commits")
+        logger.info(f"Date range: {raw_df['created_at'].min()} to {raw_df['created_at'].max()}")
+    else:
+        # Fetch PR data from GitHub API
+        logger.info(f"🔄 Fetching PRs merged in the last {Config.SINCE_DAYS} days...")
+        collector = GitHubDataCollector()
+        raw_df = collector.fetch_pr_data_for_repo(repo_name=REPO, since_days=Config.SINCE_DAYS)
+
+        if raw_df.empty:
+            logger.warning("No PRs fetched from GitHub.")
+            return
+
+        raw_df.to_parquet(raw_path, index=False)
+        logger.info(f"✅ Fetched {len(raw_df)} PRs and saved to {raw_path}")
 
     context['ti'].xcom_push(key='inference_raw_path', value=str(raw_path))
-    logger.info(f"Fetched {len(raw_df)} PRs and saved to {raw_path}")
 
 
 def generate_features(**context):
@@ -48,7 +74,8 @@ def generate_features(**context):
         raise FileNotFoundError("Missing raw data file for feature generation.")
 
     df = pd.read_parquet(raw_path)
-    logger.info(f"Loaded {len(df)} raw PR records for feature engineering.")
+    data_type = "commits" if Config.USE_COMMITS else "PRs"
+    logger.info(f"Loaded {len(df)} raw {data_type} records for feature engineering.")
 
     fe = FeatureEngineer()
     feature_df = fe.transform(df)
@@ -61,7 +88,8 @@ def generate_features(**context):
     if dropped:
         logger.info(f"Dropped features not used in training: {dropped}")
     
-    logger.info(f"✅ Using GitHub PR features only (same as training v20+)")
+    data_type = "commits" if Config.USE_COMMITS else "GitHub PRs"
+    logger.info(f"✅ Using {data_type} features only (same as training v20+)")
 
     feature_path = Config.DATA_DIR / "inference_features.parquet"
     feature_df.to_parquet(feature_path, index=False)
@@ -71,10 +99,11 @@ def generate_features(**context):
 
 
 def predict_risk(**context):
-    """Use the latest trained model to predict PR risk scores."""
+    """Use the latest trained model to predict risk scores."""
     feature_path = context['ti'].xcom_pull(key='inference_feature_path')
     feature_df = pd.read_parquet(feature_path)
-    logger.info(f"Running inference on {len(feature_df)} records...")
+    data_type = "commits" if Config.USE_COMMITS else "PRs"
+    logger.info(f"Running inference on {len(feature_df)} {data_type} records...")
 
     model_dir = Path(Config.MODELS_DIR)
     models = sorted(model_dir.glob("xgboost_risk_model_v*.pkl"))
@@ -125,11 +154,12 @@ def generate_jira_tickets(**context):
 
     predictions_df = pd.read_parquet(predictions_path)
     high_risk_df = predictions_df[predictions_df['risk_score'] >= Config.RISK_SCORE_THRESHOLD]
-    logger.info(f"Identified {len(high_risk_df)} high-risk PRs for potential tickets.")
+    data_type = "commits" if Config.USE_COMMITS else "PRs"
+    logger.info(f"Identified {len(high_risk_df)} high-risk {data_type} for potential tickets.")
     logger.info(f"Using risk score threshold: {Config.RISK_SCORE_THRESHOLD}")
 
     if high_risk_df.empty:
-        logger.info("No high-risk PRs detected. Skipping Jira ticket creation.")
+        logger.info(f"No high-risk {data_type} detected. Skipping Jira ticket creation.")
         return
 
     ticket_generator = JiraTicketGenerator()
@@ -183,7 +213,7 @@ default_args = {
 
 with DAG(
     dag_id="risk_model_inference_dag",
-    description="Weekly inference using the latest risk model to generate Jira ticket drafts for risky PRs.",
+    description="Weekly inference using the latest risk model to generate Jira ticket drafts for risky code changes (commits or PRs).",
     schedule="@weekly",
     start_date=datetime(2025, 1, 1),
     catchup=False,
@@ -191,7 +221,7 @@ with DAG(
 ) as dag:
 
     fetch_task = PythonOperator(
-        task_id="fetch_github_data",
+        task_id="fetch_data",
         python_callable=fetch_latest_github_data,
         provide_context=True,
     )
