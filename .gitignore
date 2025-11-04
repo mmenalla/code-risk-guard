@@ -13,7 +13,6 @@ dags/__pycache__/
 dags/src/utils/__pycache__/
 dags/src/data/__pycache__/
 dags/src/dashboard/__pycache__/
-dags/src/data/
 BETTER_LABELING_IMPLEMENTATION.md
 BUG_DETECTION_IMPROVEMENTS.md
 DASHBOARD_GUIDE.md
