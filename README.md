@@ -33,3 +33,7 @@ A Python-based platform for automated risk assessment of code changes, leveragin
 Airflow UI:
 Visit http://localhost:8080 after starting containers.
 
+SonnarQube Labeling:
+```
+cd /Users/megi/Documents/Other/TechDebtPOC/TDGPTRepos && ./scan_all_repos.sh
+```

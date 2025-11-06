@@ -83,7 +83,7 @@ def get_last_processed_date(mongo_uri, mongo_db, mongo_collection):
 
 
 def log_model_metrics(metrics: dict, model_name: str = "xgboost_risk_model",
-                      label_source_filter: str = "all",
+                      label_source_filter: str = "sonarqube",
                       training_samples: int = 0,
                       mongo_uri: str = "mongodb://admin:admin@mongo:27017/risk_model_db?authSource=admin",
                       db_name: str = "risk_model_db",

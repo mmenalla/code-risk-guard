@@ -1,3 +1,4 @@
+from pathlib import Path
 import os
 import re
 import joblib
@@ -15,7 +16,11 @@ from src.data.save_incremental_labeled_data import log_model_metrics
 
 class RiskModelTrainer:
     def __init__(self, model_path: str = None):
-        self.model_path = model_path or Config.MODELS_DIR / "xgboost_risk_model.pkl"
+        # Ensure model_path is a Path object
+        if model_path:
+            self.model_path = Path(model_path)
+        else:
+            self.model_path = Config.MODELS_DIR / "xgboost_risk_model.pkl"
         self.model = None
         self.logger = logging.getLogger(__name__)
 
@@ -37,10 +42,31 @@ class RiskModelTrainer:
         - use_class_weights: Deprecated parameter (kept for backward compatibility, ignored)
         """
         df = df.copy()
-        feature_cols = feature_cols or [
-            c for c in df.columns
-            if c not in ['module', 'needs_maintenance', 'repo_name', 'created_at', '_id', 'risk_category', 'filename']
+        
+        # Exclude non-numeric and metadata columns from training
+        exclude_cols = [
+            'module', 'needs_maintenance', 'repo_name', 'created_at', '_id', 
+            'risk_category', 'filename', 'last_modified', 'label_source',
         ]
+        
+        if feature_cols is None:
+            # Auto-select numeric features only
+            feature_cols = []
+            for c in df.columns:
+                if c in exclude_cols:
+                    continue
+                # Exclude SonarQube columns - they're used for labeling only, not training
+                if c.startswith('sonarqube_'):
+                    self.logger.debug(f"Excluding SonarQube metric column: {c}")
+                    continue
+                # Only include numeric types
+                if pd.api.types.is_numeric_dtype(df[c]):
+                    feature_cols.append(c)
+                else:
+                    self.logger.debug(f"Excluding non-numeric column: {c} (dtype: {df[c].dtype})")
+        
+        self.logger.info(f"Training with {len(feature_cols)} features")
+        self.logger.info(f"Feature sample: {feature_cols[:10]}...")
 
         X = df[feature_cols]
         y = df['needs_maintenance']
@@ -89,8 +115,12 @@ class RiskModelTrainer:
             for idx, row in feature_importance.head(5).iterrows():
                 self.logger.info(f"   {row['feature']:25s}: {row['importance']:.4f}")
 
+        # Save model and get path
         model_name = self.save_model()
-        return self.model, model_name, X_test, y_test
+        
+        # Evaluate and return metrics
+        metrics = self.evaluate(X_test, y_test, model_name, label_source_filter="sonarqube", training_samples=len(df))
+        return metrics
 
 
     # def evaluate(self, X_test: pd.DataFrame, y_test: pd.Series, model_name: str):
@@ -141,18 +171,20 @@ class RiskModelTrainer:
     #         )
     #         return None
 
-    def evaluate(self, X_test, y_test, model_name: str, label_source_filter: str = "all", training_samples: int = 0):
+    def evaluate(self, X_test, y_test, model_name: str, label_source_filter: str = "sonarqube", training_samples: int = 0):
         y_pred = self.model.predict(X_test)
 
         mae = mean_absolute_error(y_test, y_pred)
         mse = mean_squared_error(y_test, y_pred)
+        rmse = np.sqrt(mse)
         r2 = r2_score(y_test, y_pred)
 
-        self.logger.info(f"MAE: {mae:.4f}, MSE: {mse:.4f}, R²: {r2:.4f}")
+        self.logger.info(f"MAE: {mae:.4f}, RMSE: {rmse:.4f}, R²: {r2:.4f}")
 
         metrics = {
             "mae": mae,
             "mse": mse,
+            "rmse": rmse,
             "r2": r2,
         }
         log_model_metrics(

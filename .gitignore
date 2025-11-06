@@ -56,3 +56,13 @@ analyze_repos.sh
 analyze_sonarqube_scores.py
 analyze_training_distribution.py
 relabel_with_new_thresholds.py
+.DS_Store
+dags/.DS_Store
+dags/src/data/raw_commit_TechDebtGPT.parquet
+dags/src/data/raw_commit_backend-api.parquet
+dags/src/data/raw_commit_charts.parquet
+dags/src/data/raw_commit_tech-debt-api.parquet
+dags/src/data/raw_commit_tech-debt-services.parquet
+plan/
+venv1/
+venv2/
