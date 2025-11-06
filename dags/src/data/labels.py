@@ -197,18 +197,18 @@ class LabelCreator:
         # Base score: weighted combination (bugs weighted higher)
         base_score = 0.7 * bug_score + 0.3 * churn_score
         
-        # Boost score if enhanced features indicate additional risk
-        if 'author_concentration' in df.columns:
-            # Single author = knowledge risk (boost by up to 10%)
-            ownership_boost = df['author_concentration'].clip(0, 1) * 0.1
-            base_score = (base_score + ownership_boost).clip(0, 1)
+        # # Boost score if enhanced features indicate additional risk
+        # if 'author_concentration' in df.columns:
+        #     # Single author = knowledge risk (boost by up to 10%)
+        #     ownership_boost = df['author_concentration'].clip(0, 1) * 0.1
+        #     base_score = (base_score + ownership_boost).clip(0, 1)
         
-        if 'bug_density' in df.columns:
-            # High bug density = additional risk signal (boost by up to 10%)
-            density_max = df['bug_density'].quantile(0.95) if len(df) > 10 else df['bug_density'].max()
-            if density_max > 0:
-                density_boost = (df['bug_density'] / density_max).clip(0, 1) * 0.1
-                base_score = (base_score + density_boost).clip(0, 1)
+        # if 'bug_density' in df.columns:
+        #     # High bug density = additional risk signal (boost by up to 10%)
+        #     density_max = df['bug_density'].quantile(0.95) if len(df) > 10 else df['bug_density'].max()
+        #     if density_max > 0:
+        #         density_boost = (df['bug_density'] / density_max).clip(0, 1) * 0.1
+        #         base_score = (base_score + density_boost).clip(0, 1)
         
         return base_score
 
@@ -289,11 +289,14 @@ def create_labels_with_sonarqube(
             sonarqube_client = SonarQubeClient(sonarqube_url, sonarqube_token)
             
             # Create mapping from repo_name to project_key
+            # Use REPO_NAMES for local repos, fallback to GITHUB_REPOS for GitHub-based analysis
+            repo_list = Config.REPO_NAMES if Config.REPO_NAMES else Config.GITHUB_REPOS
             repo_to_project = {}
-            if len(Config.GITHUB_REPOS) == len(Config.SONARQUBE_PROJECT_KEYS):
-                repo_to_project = dict(zip(Config.GITHUB_REPOS, Config.SONARQUBE_PROJECT_KEYS))
+            if len(repo_list) == len(Config.SONARQUBE_PROJECT_KEYS):
+                repo_to_project = dict(zip(repo_list, Config.SONARQUBE_PROJECT_KEYS))
+                logger.info(f"Created repo-to-project mapping: {repo_to_project}")
             else:
-                logger.warning(f"Mismatch: {len(Config.GITHUB_REPOS)} GitHub repos vs {len(Config.SONARQUBE_PROJECT_KEYS)} SonarQube projects")
+                logger.warning(f"Mismatch: {len(repo_list)} repos vs {len(Config.SONARQUBE_PROJECT_KEYS)} SonarQube projects")
             
             sonarqube_count = 0
             for repo_name in df['repo_name'].unique():
@@ -375,4 +378,3 @@ def create_labels_with_sonarqube(
     logger.info(f"📊 Label sources: {label_counts.to_dict()}")
     
     return df
-

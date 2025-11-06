@@ -38,8 +38,37 @@ class Config:
     MAX_PRS = int(os.getenv("MAX_PRS", "50"))
     MAX_COMMITS = int(os.getenv("MAX_COMMITS", "300"))
     USE_COMMITS = os.getenv("USE_COMMITS", "True").lower() in ("true", "1", "yes")
-    REPO_PATH=os.getenv("REPO_PATH", "/repos/readlike-me")
+    
+    # Local Repository Paths (for commit-based analysis)
+    REPO_PATH = os.getenv("REPO_PATH", "/repos/readlike-me")
+    REPO_BASE_DIR = os.getenv("REPO_BASE_DIR", "")
+    REPO_NAMES = os.getenv("REPO_NAMES", "").strip()
+    try:
+        REPO_NAMES = json.loads(REPO_NAMES) if REPO_NAMES else []
+    except json.JSONDecodeError:
+        REPO_NAMES = [name.strip() for name in REPO_NAMES.split(",") if name.strip()]
+    
     BRANCH_NAME = os.getenv("BRANCH_NAME", "main")
+    
+    # Per-repository branch mapping (for multi-repo analysis)
+    # Example: {"repo1": "dev", "repo2": "main"}
+    REPO_BRANCHES = os.getenv("REPO_BRANCHES", "").strip()
+    try:
+        REPO_BRANCHES = json.loads(REPO_BRANCHES) if REPO_BRANCHES else {}
+    except json.JSONDecodeError:
+        REPO_BRANCHES = {}
+    
+    @classmethod
+    def get_branch_for_repo(cls, repo_name: str) -> str:
+        """Get the branch name for a specific repository.
+        
+        Args:
+            repo_name: Name of the repository
+            
+        Returns:
+            Branch name for the repository (from REPO_BRANCHES or fallback to BRANCH_NAME)
+        """
+        return cls.REPO_BRANCHES.get(repo_name, cls.BRANCH_NAME)
 
     # Ticket Generation
     GENERATE_TICKETS = os.getenv("GENERATE_TICKETS", "True").lower() in ("true", "1", "yes")

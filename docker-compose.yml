@@ -55,6 +55,7 @@ services:
     volumes:
       - ./dags:/opt/airflow/dags
       - ./logs:/opt/airflow/logs
+      - /Users/megi/Documents/Other/TechDebtPOC/TDGPTRepos:/repos/TDGPTRepos:ro
     ports:
       - "8080:8080"
     entrypoint: >
@@ -74,6 +75,7 @@ services:
       PYTHONPATH: /opt/airflow/dags
     volumes:
       - ./dags:/opt/airflow/dags
+      - /Users/megi/Documents/Other/TechDebtPOC/TDGPTRepos:/repos/TDGPTRepos:ro
     entrypoint: >
       bash -c "airflow scheduler"
     networks:
