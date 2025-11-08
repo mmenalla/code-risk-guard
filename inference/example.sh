@@ -7,11 +7,11 @@
 #
 
 # Configuration
-REPO_PATH="/Users/megi/Documents/Other/LLM/readlike-me"
+REPO_PATH="/Users/klaudiavoka/Documents/TDGPT_MVP/code-risk-guard"
 MODEL_PATH="../dags/src/models/artifacts/xgboost_risk_model_v23.pkl"
 OUTPUT_DIR="results"
 BRANCH="main"
-MAX_COMMITS=1
+MAX_COMMITS=100
 
 # Color output
 GREEN='\033[0;32m'

@@ -100,6 +100,27 @@ services:
       - local
     restart: always
 
+  streamlit:
+    build:
+      context: .
+      dockerfile: Dockerfile.streamlit
+    container_name: maintsight_streamlit
+    ports:
+      - "8501:8501"
+    environment:
+      MONGO_URI: "mongodb://admin:admin@mongo:27017/risk_model_db?authSource=admin"
+      MONGO_DB: "risk_model_db"
+      MONGO_COLLECTION: "ticket_drafts"
+      MONGO_PREDICTIONS_COLLECTION: "model_predictions"
+      MONGO_FEEDBACK_COLLECTION: "risk_feedback"
+    volumes:
+      - ./:/app:rw
+    depends_on:
+      - mongo
+    networks:
+      - local
+    restart: unless-stopped
+
   sonarqube:
     image: sonarqube:community
     container_name: maintai_sonarqube
