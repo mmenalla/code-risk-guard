@@ -21,8 +21,8 @@ from airflow.operators.python import PythonOperator
 from airflow.utils.task_group import TaskGroup
 
 from src.utils.config import Config
-from src.data.temporal_git_collector import TemporalGitDataCollector
-from src.data.temporal_sonarqube_client import TemporalSonarQubeClient
+from src.data.git_commit_client import GitCommitCollector
+from src.data.sonarqube_client import SonarQubeClient
 from src.data.save_incremental_labeled_data import push_to_mongo, log_model_metrics
 from src.models.train import RiskModelTrainer
 
@@ -45,7 +45,7 @@ def verify_multi_window_projects(**context):
     """Verify that multi-window historical SonarQube projects exist for all repos."""
     logger.info("🔍 Verifying multi-window historical SonarQube projects...")
     
-    sonarqube_client = TemporalSonarQubeClient(
+    sonarqube_client = SonarQubeClient(
         Config.SONARQUBE_URL,
         Config.SONARQUBE_TOKEN
     )
@@ -96,7 +96,7 @@ def fetch_multi_window_data_task(repo_name: str, window_idx: int, **context):
     logger.info(f"   Window {window_idx}: {window_start.date()} → {window_end.date()}")
     
     # Collect temporal data from this window
-    collector = TemporalGitDataCollector(repo_path, branch)
+    collector = GitCommitCollector(repo_path, branch)
     
     try:
         features_df = collector.calculate_temporal_features(
@@ -115,14 +115,11 @@ def fetch_multi_window_data_task(repo_name: str, window_idx: int, **context):
         
         features_df['repo_name'] = repo_name
         features_df['window_id'] = window_idx
-        features_df['window_start'] = window_start
-        features_df['window_end'] = window_end
+        features_df['window_start'] = str(window_start)
+        features_df['window_end'] = str(window_end)
         features_df['window_size_days'] = WINDOW_SIZE_DAYS
         
         logger.info(f"✅ Extracted {len(features_df)} file features from window {window_idx}")
-        
-        features_df['window_start'] = features_df['window_start'].astype(str)
-        features_df['window_end'] = features_df['window_end'].astype(str)
         context['task_instance'].xcom_push(
             key=f'{repo_name}_window{window_idx}_features',
             value=features_df.to_dict('records')
@@ -167,7 +164,7 @@ def create_multi_window_labels_task(repo_name: str, window_idx: int, **context):
     
     logger.info(f"   Window {window_idx}: [{window_start_days_ago}d → {window_end_days_ago}d ago]")
     logger.info(f"   Label = quality@{window_end_project} - quality@{window_start_project}")
-    sonarqube_client = TemporalSonarQubeClient(
+    sonarqube_client = SonarQubeClient(
         Config.SONARQUBE_URL,
         Config.SONARQUBE_TOKEN
     )

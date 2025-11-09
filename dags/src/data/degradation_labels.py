@@ -18,7 +18,7 @@ import logging
 from typing import Dict, Optional, List
 from datetime import datetime
 
-from src.data.temporal_sonarqube_client import TemporalSonarQubeClient
+from src.data.sonarqube_client import SonarQubeClient
 from src.utils.config import Config
 
 logger = logging.getLogger(__name__)
@@ -53,7 +53,7 @@ class DegradationLabelCreator:
         if not self.sonarqube_url or not self.sonarqube_token:
             raise ValueError("SonarQube URL and token must be configured")
         
-        self.temporal_client = TemporalSonarQubeClient(
+        self.temporal_client = SonarQubeClient(
             self.sonarqube_url,
             self.sonarqube_token
         )
