@@ -290,6 +290,143 @@ class GitCommitCollector:
         except Exception as e:
             logger.error(f"Error getting age for {filepath}: {e}")
             return None
+    
+    def get_commits_in_date_range(
+        self,
+        start_date: datetime,
+        end_date: datetime,
+        max_commits: int = 10000
+    ) -> List[Commit]:
+        """
+        Get commits within a date range.
+        
+        Args:
+            start_date: Start of date range
+            end_date: End of date range
+            max_commits: Maximum commits to retrieve
+        
+        Returns:
+            List of Commit objects
+        """
+        try:
+            # Format dates for git log
+            after = start_date.strftime('%Y-%m-%d')
+            before = end_date.strftime('%Y-%m-%d')
+            
+            commits = list(self.repo.iter_commits(
+                self.branch,
+                after=after,
+                before=before,
+                max_count=max_commits
+            ))
+            
+            logger.info(f"Found {len(commits)} commits between {after} and {before}")
+            return commits
+            
+        except Exception as e:
+            logger.error(f"Error getting commits in date range: {e}")
+            return []
+    
+    def calculate_features_from_commits(self, commits: List[Commit]) -> pd.DataFrame:
+        """
+        Calculate file-level features from a list of commits.
+        
+        Args:
+            commits: List of Commit objects
+        
+        Returns:
+            DataFrame with features per file
+        """
+        file_stats = {}
+        
+        for commit in commits:
+            try:
+                # Check if commit has parents (skip initial commit)
+                if not commit.parents:
+                    continue
+                
+                # Get diff stats
+                diff = commit.parents[0].diff(commit, create_patch=False)
+                
+                for change in diff:
+                    # Skip deleted files
+                    if change.deleted_file:
+                        continue
+                    
+                    filepath = change.b_path if change.b_path else change.a_path
+                    
+                    if filepath not in file_stats:
+                        file_stats[filepath] = {
+                            'lines_added': 0,
+                            'lines_removed': 0,
+                            'commits': 0,
+                            'authors': set(),
+                            'bug_commits': 0,
+                            'refactor_commits': 0,
+                            'feature_commits': 0,
+                            'first_commit': commit.committed_datetime,
+                            'last_commit': commit.committed_datetime
+                        }
+                    
+                    stats = file_stats[filepath]
+                    
+                    # Update stats
+                    if hasattr(change.diff, 'decode'):
+                        # Count lines added/removed from diff
+                        diff_text = change.diff.decode('utf-8', errors='ignore')
+                        for line in diff_text.split('\n'):
+                            if line.startswith('+') and not line.startswith('+++'):
+                                stats['lines_added'] += 1
+                            elif line.startswith('-') and not line.startswith('---'):
+                                stats['lines_removed'] += 1
+                    
+                    stats['commits'] += 1
+                    stats['authors'].add(commit.author.email)
+                    
+                    # Classify commit type
+                    message_lower = commit.message.lower()
+                    if any(word in message_lower for word in ['fix', 'bug', 'patch', 'hotfix']):
+                        stats['bug_commits'] += 1
+                    elif any(word in message_lower for word in ['refactor', 'clean', 'improve']):
+                        stats['refactor_commits'] += 1
+                    elif any(word in message_lower for word in ['feat', 'feature', 'add', 'new']):
+                        stats['feature_commits'] += 1
+                    
+                    # Update timestamps
+                    if commit.committed_datetime > stats['last_commit']:
+                        stats['last_commit'] = commit.committed_datetime
+                    if commit.committed_datetime < stats['first_commit']:
+                        stats['first_commit'] = commit.committed_datetime
+                        
+            except Exception as e:
+                logger.warning(f"Error processing commit {commit.hexsha[:8]}: {e}")
+                continue
+        
+        # Convert to DataFrame
+        rows = []
+        for filepath, stats in file_stats.items():
+            row = {
+                'module': filepath,
+                'commits': stats['commits'],
+                'authors': len(stats['authors']),
+                'lines_added': stats['lines_added'],
+                'lines_removed': stats['lines_removed'],
+                'churn': stats['lines_added'] + stats['lines_removed'],
+                'bug_commits': stats['bug_commits'],
+                'refactor_commits': stats['refactor_commits'],
+                'feature_commits': stats['feature_commits'],
+                'lines_per_author': stats['lines_added'] / len(stats['authors']) if stats['authors'] else 0,
+                'churn_per_commit': (stats['lines_added'] + stats['lines_removed']) / stats['commits'] if stats['commits'] > 0 else 0,
+                'bug_ratio': stats['bug_commits'] / stats['commits'] if stats['commits'] > 0 else 0,
+                'days_active': (stats['last_commit'] - stats['first_commit']).days,
+                'commits_per_day': stats['commits'] / max((stats['last_commit'] - stats['first_commit']).days, 1)
+            }
+            rows.append(row)
+        
+        df = pd.DataFrame(rows)
+        logger.info(f"Calculated features for {len(df)} files")
+        
+        return df
 
 
 def main():

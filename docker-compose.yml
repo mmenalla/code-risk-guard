@@ -73,6 +73,7 @@ services:
       AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
       AIRFLOW__CORE__LOAD_EXAMPLES: "False"
       PYTHONPATH: /opt/airflow/dags
+      TUNE_HYPERPARAMETERS: "true"
     volumes:
       - ./dags:/opt/airflow/dags
       - /Users/megi/Documents/Other/TechDebtPOC/TDGPTRepos:/repos/TDGPTRepos:ro
