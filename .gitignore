@@ -66,3 +66,15 @@ dags/src/data/raw_commit_tech-debt-services.parquet
 plan/
 venv1/
 venv2/
+dags/src/data/raw_commit_express.parquet
+dags/src/data/raw_commit_flask.parquet
+dags/src/data/raw_commit_kubernetes.parquet
+dags/src/data/raw_commit_numpy.parquet
+dags/src/data/raw_commit_pandas.parquet
+dags/src/data/raw_commit_react.parquet
+dags/src/data/raw_commit_scikit-learn.parquet
+dags/src/data/raw_commit_transformers.parquet
+analyze_feature_distribution.py 
+analyze_model.py 
+check_feature_distribution.py 
+compare_inference_features.py

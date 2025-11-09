@@ -11,7 +11,7 @@ Usage:
 
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import List, Dict, Optional
 import pandas as pd
@@ -68,13 +68,169 @@ class GitCommitCollector:
         
         logger.info(f"Using branch: {branch}")
     
-    def fetch_commit_data(self, max_commits: int = 300, since_days: Optional[int] = None) -> pd.DataFrame:
+    def calculate_temporal_features(
+        self,
+        start_date: datetime,
+        end_date: datetime,
+        max_commits: int = 10000
+    ) -> pd.DataFrame:
         """
-        Fetch commit data and aggregate by file.
+        Calculate Git features for a specific time window (temporal analysis).
+        
+        This is the main method used for degradation prediction - it analyzes
+        commits within a date range to understand code activity patterns.
+        
+        Args:
+            start_date: Beginning of time window
+            end_date: End of time window
+            max_commits: Maximum commits to analyze
+            
+        Returns:
+            DataFrame with Git features per file for the time window
+        """
+        logger.info(f"Calculating temporal features from {start_date.date()} to {end_date.date()}")
+        
+        days_delta = (end_date - start_date).days
+        
+        # Get commits in date range
+        commits = list(self.repo.iter_commits(
+            self.branch,
+            max_count=max_commits,
+            since=start_date.strftime('%Y-%m-%d'),
+            until=end_date.strftime('%Y-%m-%d')
+        ))
+        
+        logger.info(f"Found {len(commits)} commits in date range")
+        
+        if not commits:
+            logger.warning("No commits found in specified date range")
+            return pd.DataFrame()
+        
+        # Extract features from commits
+        features_df = self._extract_temporal_features(commits, days_delta)
+        
+        return features_df
+    
+    def _extract_temporal_features(
+        self, 
+        commits: List[Commit], 
+        days_in_window: int
+    ) -> pd.DataFrame:
+        """
+        Extract Git features from commits in a time window.
+        
+        Args:
+            commits: List of Git commit objects
+            days_in_window: Number of days in the time window
+            
+        Returns:
+            DataFrame with features per file
+        """
+        from collections import defaultdict
+        
+        file_stats = defaultdict(lambda: {
+            'commits': 0,
+            'authors': set(),
+            'lines_added': 0,
+            'lines_deleted': 0,
+            'churn': 0,
+            'bug_related': 0,
+            'refactor_related': 0,
+            'feature_related': 0,
+        })
+        
+        for commit in commits:
+            message = commit.message.lower()
+            is_bug = any(keyword in message for keyword in ['fix', 'bug', 'issue', 'error'])
+            is_refactor = any(keyword in message for keyword in ['refactor', 'cleanup', 'improve'])
+            is_feature = any(keyword in message for keyword in ['feat', 'add', 'implement', 'new'])
+            
+            if commit.parents:
+                parent = commit.parents[0]
+                diffs = parent.diff(commit, create_patch=True)
+                
+                for diff in diffs:
+                    if diff.b_path:
+                        filepath = diff.b_path
+                    elif diff.a_path:
+                        filepath = diff.a_path
+                    else:
+                        continue
+                    
+                    if not filepath or filepath == '/dev/null':
+                        continue
+                    
+                    if not self._is_source_file(filepath):
+                        continue
+                    
+                    # Count line changes
+                    insertions = 0
+                    deletions = 0
+                    
+                    if diff.diff:
+                        diff_text = diff.diff.decode('utf-8', errors='ignore')
+                        for line in diff_text.split('\n'):
+                            if line.startswith('+') and not line.startswith('+++'):
+                                insertions += 1
+                            elif line.startswith('-') and not line.startswith('---'):
+                                deletions += 1
+                    
+                    file_stats[filepath]['commits'] += 1
+                    file_stats[filepath]['authors'].add(commit.author.name)
+                    file_stats[filepath]['lines_added'] += insertions
+                    file_stats[filepath]['lines_deleted'] += deletions
+                    file_stats[filepath]['churn'] += insertions + deletions
+                    
+                    if is_bug:
+                        file_stats[filepath]['bug_related'] += 1
+                    if is_refactor:
+                        file_stats[filepath]['refactor_related'] += 1
+                    if is_feature:
+                        file_stats[filepath]['feature_related'] += 1
+        
+        # Convert to DataFrame
+        rows = []
+        for file_path, stats in file_stats.items():
+            num_authors = len(stats['authors'])
+            num_commits = stats['commits']
+            
+            rows.append({
+                'module': file_path,
+                'commits': num_commits,
+                'authors': num_authors,
+                'lines_added': stats['lines_added'],
+                'lines_deleted': stats['lines_deleted'],
+                'churn': stats['churn'],
+                'bug_commits': stats['bug_related'],
+                'refactor_commits': stats['refactor_related'],
+                'feature_commits': stats['feature_related'],
+                'lines_per_author': stats['lines_added'] / num_authors if num_authors > 0 else 0,
+                'churn_per_commit': stats['churn'] / num_commits if num_commits > 0 else 0,
+                'bug_ratio': stats['bug_related'] / num_commits if num_commits > 0 else 0,
+                'days_active': days_in_window,
+                'commits_per_day': num_commits / days_in_window if days_in_window > 0 else 0,
+            })
+        
+        df = pd.DataFrame(rows)
+        logger.info(f"Extracted features for {len(df)} files from temporal window")
+        
+        return df
+    
+    def fetch_commit_data(
+        self, 
+        max_commits: int = 300, 
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+        since_days: Optional[int] = None
+    ) -> pd.DataFrame:
+        """
+        Fetch commit data and aggregate by file with temporal window support.
         
         Args:
             max_commits: Maximum number of commits to analyze
-            since_days: Only analyze commits from last N days (optional)
+            start_date: Start of temporal window (optional)
+            end_date: End of temporal window (optional)
+            since_days: Only analyze commits from last N days (legacy, optional)
         
         Returns:
             DataFrame with columns:
@@ -89,19 +245,33 @@ class GitCommitCollector:
                 - repo_name: Repository name
         """
         logger.info(f"Fetching commits from {self.repo_path} (branch: {self.branch})")
-        logger.info(f"Max commits: {max_commits}, Since days: {since_days}")
+        logger.info(f"Max commits: {max_commits}")
+        if start_date and end_date:
+            logger.info(f"Temporal window: {start_date} to {end_date}")
+        elif since_days:
+            logger.info(f"Since days: {since_days}")
         
         # Get commits from the current branch
         commits = list(self.repo.iter_commits(self.branch, max_count=max_commits))
         logger.info(f"Found {len(commits)} commits")
         
-        if since_days:
-            from datetime import timedelta
-            cutoff_date = datetime.now(timezone.utc).replace(tzinfo=None)
-            cutoff_date = cutoff_date - timedelta(days=since_days)
-            # Convert commit dates to naive UTC for comparison
+        # Filter by temporal window if specified
+        if start_date and end_date:
+            # Ensure dates are timezone-aware for comparison
+            if start_date.tzinfo is None:
+                start_date = start_date.replace(tzinfo=timezone.utc)
+            if end_date.tzinfo is None:
+                end_date = end_date.replace(tzinfo=timezone.utc)
+            
             commits = [c for c in commits 
-                      if (c.committed_datetime.astimezone(timezone.utc).replace(tzinfo=None) > cutoff_date)]
+                      if start_date <= c.committed_datetime.astimezone(timezone.utc) <= end_date]
+            logger.info(f"Filtered to {len(commits)} commits in temporal window")
+        
+        # Legacy: filter by since_days if specified (for backward compatibility)
+        elif since_days:
+            cutoff_date = datetime.now(timezone.utc) - timedelta(days=since_days)
+            commits = [c for c in commits 
+                      if c.committed_datetime.astimezone(timezone.utc) > cutoff_date]
             logger.info(f"Filtered to {len(commits)} commits since {since_days} days ago")
         
         # Aggregate file-level stats
@@ -179,25 +349,34 @@ class GitCommitCollector:
         repo_name = self.repo_path.name
         
         for filepath, stats in file_stats.items():
+            # Calculate base features with NEW consolidated column names
+            num_authors = len(stats['authors'])
+            num_commits = stats['commits']
+            days_active_val = max((stats['last_commit'] - stats['first_commit']).days, 1)
+            
             rows.append({
-                'filename': filepath,
+                'module': filepath,
+                'commits': num_commits,
+                'authors': num_authors,
                 'lines_added': stats['lines_added'],
-                'lines_removed': stats['lines_removed'],
-                'churn': stats['lines_added'] + stats['lines_removed'],  # Total code churn
-                'prs': stats['commits'],  # Use 'prs' for compatibility with existing pipeline
-                'unique_authors': len(stats['authors']),
-                'bug_prs': stats['bug_commits'],  # Use 'bug_prs' for compatibility
-                'created_at': stats['first_commit'],
-                'last_modified': stats['last_commit'],
-                'repo_name': repo_name,
-                'module': filepath  # For compatibility
+                'lines_deleted': stats['lines_removed'],  # Keep internal stats['lines_removed'], but output as 'lines_deleted'
+                'churn': stats['lines_added'] + stats['lines_removed'],
+                'bug_commits': stats['bug_commits'],
+                'refactor_commits': stats.get('refactor_commits', 0),
+                'feature_commits': stats.get('feature_commits', 0),
+                'lines_per_author': stats['lines_added'] / num_authors if num_authors > 0 else 0,
+                'churn_per_commit': (stats['lines_added'] + stats['lines_removed']) / num_commits if num_commits > 0 else 0,
+                'bug_ratio': stats['bug_commits'] / num_commits if num_commits > 0 else 0,
+                'days_active': days_active_val,
+                'commits_per_day': num_commits / days_active_val,
+                'repo_name': repo_name
             })
         
         df = pd.DataFrame(rows)
         logger.info(f"Extracted data for {len(df)} files")
-        logger.info(f"Total commits analyzed: {sum(df['prs'])}")
-        logger.info(f"Total lines added: {df['lines_added'].sum()}")
-        logger.info(f"Total lines removed: {df['lines_removed'].sum()}")
+        logger.info(f"Total commits analyzed: {df['commits'].sum():.0f}")
+        logger.info(f"Total lines added: {df['lines_added'].sum():.0f}")
+        logger.info(f"Total lines deleted: {df['lines_deleted'].sum():.0f}")
         
         return df
     
@@ -290,6 +469,200 @@ class GitCommitCollector:
         except Exception as e:
             logger.error(f"Error getting age for {filepath}: {e}")
             return None
+    
+    def get_commits_in_date_range(
+        self,
+        start_date: datetime,
+        end_date: datetime,
+        max_commits: int = 10000
+    ) -> List[Commit]:
+        """
+        Get commits within a date range.
+        
+        Args:
+            start_date: Start of date range
+            end_date: End of date range
+            max_commits: Maximum commits to retrieve
+        
+        Returns:
+            List of Commit objects
+        """
+        try:
+            # Format dates for git log
+            after = start_date.strftime('%Y-%m-%d')
+            before = end_date.strftime('%Y-%m-%d')
+            
+            commits = list(self.repo.iter_commits(
+                self.branch,
+                after=after,
+                before=before,
+                max_count=max_commits
+            ))
+            
+            logger.info(f"Found {len(commits)} commits between {after} and {before}")
+            return commits
+            
+        except Exception as e:
+            logger.error(f"Error getting commits in date range: {e}")
+            return []
+    
+    def calculate_features_from_commits(self, commits: List[Commit]) -> pd.DataFrame:
+        """
+        Calculate file-level features from a list of commits.
+        
+        Args:
+            commits: List of Commit objects
+        
+        Returns:
+            DataFrame with features per file
+        """
+        file_stats = {}
+        
+        for commit in commits:
+            try:
+                # Check if commit has parents (skip initial commit)
+                if not commit.parents:
+                    continue
+                
+                # Get diff stats
+                diff = commit.parents[0].diff(commit, create_patch=False)
+                
+                for change in diff:
+                    # Skip deleted files
+                    if change.deleted_file:
+                        continue
+                    
+                    filepath = change.b_path if change.b_path else change.a_path
+                    
+                    if filepath not in file_stats:
+                        file_stats[filepath] = {
+                            'lines_added': 0,
+                            'lines_removed': 0,
+                            'commits': 0,
+                            'authors': set(),
+                            'bug_commits': 0,
+                            'refactor_commits': 0,
+                            'feature_commits': 0,
+                            'first_commit': commit.committed_datetime,
+                            'last_commit': commit.committed_datetime
+                        }
+                    
+                    stats = file_stats[filepath]
+                    
+                    # Update stats
+                    if hasattr(change.diff, 'decode'):
+                        # Count lines added/removed from diff
+                        diff_text = change.diff.decode('utf-8', errors='ignore')
+                        for line in diff_text.split('\n'):
+                            if line.startswith('+') and not line.startswith('+++'):
+                                stats['lines_added'] += 1
+                            elif line.startswith('-') and not line.startswith('---'):
+                                stats['lines_removed'] += 1
+                    
+                    stats['commits'] += 1
+                    stats['authors'].add(commit.author.email)
+                    
+                    # Classify commit type
+                    message_lower = commit.message.lower()
+                    if any(word in message_lower for word in ['fix', 'bug', 'patch', 'hotfix']):
+                        stats['bug_commits'] += 1
+                    elif any(word in message_lower for word in ['refactor', 'clean', 'improve']):
+                        stats['refactor_commits'] += 1
+                    elif any(word in message_lower for word in ['feat', 'feature', 'add', 'new']):
+                        stats['feature_commits'] += 1
+                    
+                    # Update timestamps
+                    if commit.committed_datetime > stats['last_commit']:
+                        stats['last_commit'] = commit.committed_datetime
+                    if commit.committed_datetime < stats['first_commit']:
+                        stats['first_commit'] = commit.committed_datetime
+                        
+            except Exception as e:
+                logger.warning(f"Error processing commit {commit.hexsha[:8]}: {e}")
+                continue
+        
+        # Convert to DataFrame
+        rows = []
+        for filepath, stats in file_stats.items():
+            row = {
+                'module': filepath,
+                'commits': stats['commits'],
+                'authors': len(stats['authors']),
+                'lines_added': stats['lines_added'],
+                'lines_deleted': stats['lines_deleted'],
+                'churn': stats['lines_added'] + stats['lines_deleted'],
+                'bug_commits': stats['bug_commits'],
+                'refactor_commits': stats['refactor_commits'],
+                'feature_commits': stats['feature_commits'],
+                'lines_per_author': stats['lines_added'] / len(stats['authors']) if stats['authors'] else 0,
+                'churn_per_commit': (stats['lines_added'] + stats['lines_deleted']) / stats['commits'] if stats['commits'] > 0 else 0,
+                'bug_ratio': stats['bug_commits'] / stats['commits'] if stats['commits'] > 0 else 0,
+                'days_active': (stats['last_commit'] - stats['first_commit']).days,
+                'commits_per_day': stats['commits'] / max((stats['last_commit'] - stats['first_commit']).days, 1)
+            }
+            rows.append(row)
+        
+        df = pd.DataFrame(rows)
+        logger.info(f"Calculated features for {len(df)} files")
+        
+        return df
+    
+    def calculate_temporal_features(
+        self,
+        start_date: datetime,
+        end_date: datetime,
+        max_commits: int = 10000
+    ) -> pd.DataFrame:
+        """
+        Calculate features for a specific temporal window.
+        
+        This is the main method used by the training DAG for temporal analysis.
+        
+        Args:
+            start_date: Start of temporal window
+            end_date: End of temporal window
+            max_commits: Maximum commits to process
+            
+        Returns:
+            DataFrame with calculated features for the temporal window
+        """
+        logger.info(f"Calculating temporal features from {start_date} to {end_date}")
+        
+        # Use the enhanced fetch_commit_data with temporal filtering
+        df = self.fetch_commit_data(
+            max_commits=max_commits,
+            start_date=start_date,
+            end_date=end_date
+        )
+        
+        # Note: fetch_commit_data already calculates all base features including:
+        # lines_per_author, churn_per_commit, bug_ratio, days_active, commits_per_day
+        
+        # Convert any timestamp columns to strings for JSON serialization
+        timestamp_columns = ['created_at', 'last_modified']
+        for col in timestamp_columns:
+            if col in df.columns:
+                df[col] = df[col].astype(str)
+        
+        logger.info(f"Temporal features calculated for {len(df)} files")
+        return df
+    
+    @staticmethod
+    def get_historical_date(days_back: int, reference_date: Optional[datetime] = None) -> datetime:
+        """
+        Calculate a historical date relative to a reference point.
+        
+        Args:
+            days_back: Number of days to go back
+            reference_date: Reference date (defaults to now)
+            
+        Returns:
+            Historical datetime
+        """
+        if reference_date is None:
+            reference_date = datetime.now(timezone.utc)
+        
+        return reference_date - timedelta(days=days_back)
 
 
 def main():

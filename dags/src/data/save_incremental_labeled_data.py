@@ -3,6 +3,7 @@ from pymongo import MongoClient
 import logging
 from pathlib import Path
 import re
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -15,10 +16,16 @@ def push_to_mongo(df, mongo_uri: str, mongo_db: str, mongo_collection: str):
         logger.warning("DataFrame is empty. Nothing to insert into MongoDB.")
         return
 
+    # Add created_at if not present
+    if 'created_at' not in df.columns:
+        df['created_at'] = datetime.utcnow()
+    
     try:
         df['created_at'] = pd.to_datetime(df['created_at'], utc=True)
     except Exception as e:
         logger.error(f"Error converting 'created_at' to datetime: {e}")
+        # If conversion fails, set to current time
+        df['created_at'] = datetime.utcnow()
 
     client = MongoClient(mongo_uri)
     db = client[mongo_db]

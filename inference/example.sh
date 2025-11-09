@@ -6,12 +6,13 @@
 # a local git repository and generate risk predictions.
 #
 
-# Configuration
-REPO_PATH="/Users/megi/Documents/Other/LLM/readlike-me"
-MODEL_PATH="../dags/src/models/artifacts/xgboost_risk_model_v23.pkl"
+# Configuration  
+REPO_PATH="/Users/megi/Documents/Other/TechDebtPOC/TDGPTRepos/TechDebtGPT"
+MODEL_PATH="/Users/megi/Documents/Other/TechDebtPOC/code-risk-guard/dags/src/models/artifacts/xgboost_degradation_model_v13.pkl"
 OUTPUT_DIR="results"
-BRANCH="main"
-MAX_COMMITS=1
+BRANCH="dev"
+MAX_COMMITS=10000
+WINDOW_SIZE_DAYS=150
 
 # Color output
 GREEN='\033[0;32m'
@@ -43,6 +44,7 @@ echo -e "${GREEN}✓${NC} Model: $MODEL_PATH"
 echo -e "${GREEN}✓${NC} Output directory: $OUTPUT_DIR"
 echo -e "${GREEN}✓${NC} Branch: $BRANCH"
 echo -e "${GREEN}✓${NC} Max commits: $MAX_COMMITS"
+echo -e "${GREEN}✓${NC} Window size: $WINDOW_SIZE_DAYS days"
 echo ""
 
 # Run prediction
@@ -54,6 +56,7 @@ python predictmeifyoucan.py \
     --model-path "$MODEL_PATH" \
     --branch "$BRANCH" \
     --max-commits $MAX_COMMITS \
+    --window-size-days $WINDOW_SIZE_DAYS \
     --output "$OUTPUT_DIR"
 
 # Check if successful
