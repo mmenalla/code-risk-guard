@@ -401,7 +401,7 @@ def fetch_commits(repo_path: str, branch: str = "main", max_commits: int = 10000
     return df
 
 
-def save_predictions(predictions_df: pd.DataFrame, output_path: str):
+def save_predictions(predictions_df: pd.DataFrame, output_path: str, repo_path: str = None):
     timestamp = int(datetime.now().timestamp())
     
     output_path = Path(output_path)
@@ -411,6 +411,16 @@ def save_predictions(predictions_df: pd.DataFrame, output_path: str):
         output_dir = output_path.parent
     
     output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Extract repo name from path
+    repo_name = "repo"
+    if repo_path:
+        repo_name = Path(repo_path).name
+        # Clean repo name for filename (remove special chars)
+        repo_name = repo_name.replace(' ', '_').replace('/', '_').replace('\\', '_')
+    
+    # Create filename with repo name
+    base_filename = f"{repo_name}_predictions_{timestamp}"
     
     # Organize columns: Key info first, then base features, then engineered features
     priority_cols = ['module', 'degradation_score', 'raw_prediction', 'risk_category']
@@ -453,9 +463,9 @@ def save_predictions(predictions_df: pd.DataFrame, output_path: str):
     output_df = output_df.sort_values('degradation_score', ascending=False)
     
     # Save as HTML
-    html_filename = f"predictions_{timestamp}.html"
+    html_filename = f"{base_filename}.html"
     html_path = output_dir / html_filename
-    _generate_html_report(output_df, html_path, timestamp)
+    _generate_html_report(output_df, html_path, timestamp, repo_name)
     
     # Get absolute path for file:// URL
     abs_html_path = html_path.resolve()
@@ -464,7 +474,7 @@ def save_predictions(predictions_df: pd.DataFrame, output_path: str):
     logger.info(f"✅ Predictions saved to {html_path}")
     
     # Also save CSV for backwards compatibility
-    csv_filename = f"predictions_{timestamp}.csv"
+    csv_filename = f"{base_filename}.csv"
     csv_path = output_dir / csv_filename
     output_df.to_csv(csv_path, index=False)
     logger.info(f"✅ CSV also saved to {csv_path}")
@@ -496,7 +506,7 @@ def save_predictions(predictions_df: pd.DataFrame, output_path: str):
     logger.info(f"   (Cmd+Click or Ctrl+Click to open in browser)\n")
 
 
-def _generate_html_report(df: pd.DataFrame, output_path: Path, timestamp: int):
+def _generate_html_report(df: pd.DataFrame, output_path: Path, timestamp: int, repo_name: str = "Repository"):
     """Generate an interactive HTML report with sortable table."""
     
     # Calculate statistics
@@ -522,7 +532,7 @@ def _generate_html_report(df: pd.DataFrame, output_path: Path, timestamp: int):
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Code Degradation Risk Prediction Report</title>
+    <title>Code Degradation Risk Report - {repo_name}</title>
     <style>
         * {{
             margin: 0;
@@ -719,6 +729,7 @@ def _generate_html_report(df: pd.DataFrame, output_path: Path, timestamp: int):
     <div class="container">
         <div class="header">
             <h1>🎯 Code Degradation Risk Report</h1>
+            <p style="font-size: 1.2em; font-weight: 500; margin: 10px 0;">{repo_name}</p>
             <p>Generated on {report_date}</p>
         </div>
         
@@ -981,7 +992,7 @@ Examples:
         logger.info(f"\n{'='*60}")
         logger.info(f"STEP 3: SAVE RESULTS")
         logger.info(f"{'='*60}")
-        save_predictions(predictions_df, args.output)
+        save_predictions(predictions_df, args.output, args.repo_path)
         
         logger.info(f"✅ Risk prediction complete!")
         
