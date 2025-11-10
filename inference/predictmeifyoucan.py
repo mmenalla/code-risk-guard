@@ -314,7 +314,10 @@ class StandaloneRiskPredictor:
         # Raw predictions are often out of this range due to feature distribution mismatch
         degradation_score = self._calibrate_predictions(raw_predictions)
         
-        result = metadata.copy()
+        # Start with the full feature dataframe (includes all base + engineered features)
+        result = df_features.copy()
+        
+        # Add prediction results
         result['degradation_score'] = degradation_score
         result['raw_prediction'] = raw_predictions  # Keep raw for debugging
         
@@ -409,20 +412,64 @@ def save_predictions(predictions_df: pd.DataFrame, output_path: str):
     
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    timestamped_filename = f"predictions_{timestamp}.csv"
-    final_output_path = output_dir / timestamped_filename
+    # Organize columns: Key info first, then base features, then engineered features
+    priority_cols = ['module', 'degradation_score', 'raw_prediction', 'risk_category']
     
-    # Include raw_prediction if available for debugging
-    cols_to_save = ['module', 'degradation_score', 'risk_category']
-    if 'raw_prediction' in predictions_df.columns:
-        cols_to_save.append('raw_prediction')
+    # Base Git features (13)
+    base_features = [
+        'commits', 'authors', 'lines_added', 'lines_deleted', 'churn',
+        'bug_commits', 'refactor_commits', 'feature_commits',
+        'lines_per_author', 'churn_per_commit', 'bug_ratio', 
+        'days_active', 'commits_per_day'
+    ]
+    
+    # Engineered features (13)
+    engineered_features = [
+        'degradation_days', 'net_lines', 'code_stability', 'is_high_churn_commit',
+        'bug_commit_rate', 'commits_squared', 'author_concentration',
+        'lines_per_commit', 'churn_rate', 'modification_ratio',
+        'churn_per_author', 'deletion_rate', 'commit_density'
+    ]
+    
+    # Build final column order
+    cols_to_save = priority_cols.copy()
+    
+    # Add base features that exist
+    for col in base_features:
+        if col in predictions_df.columns and col not in cols_to_save:
+            cols_to_save.append(col)
+    
+    # Add engineered features that exist
+    for col in engineered_features:
+        if col in predictions_df.columns and col not in cols_to_save:
+            cols_to_save.append(col)
+    
+    # Add any remaining columns not already included
+    for col in predictions_df.columns:
+        if col not in cols_to_save:
+            cols_to_save.append(col)
     
     output_df = predictions_df[cols_to_save].copy()
     output_df = output_df.sort_values('degradation_score', ascending=False)
     
-    output_df.to_csv(final_output_path, index=False)
-    logger.info(f"✅ Predictions saved to {final_output_path}")
+    # Save as HTML
+    html_filename = f"predictions_{timestamp}.html"
+    html_path = output_dir / html_filename
+    _generate_html_report(output_df, html_path, timestamp)
     
+    # Get absolute path for file:// URL
+    abs_html_path = html_path.resolve()
+    file_url = f"file://{abs_html_path}"
+    
+    logger.info(f"✅ Predictions saved to {html_path}")
+    
+    # Also save CSV for backwards compatibility
+    csv_filename = f"predictions_{timestamp}.csv"
+    csv_path = output_dir / csv_filename
+    output_df.to_csv(csv_path, index=False)
+    logger.info(f"✅ CSV also saved to {csv_path}")
+    
+    # Print summary
     logger.info(f"\n{'='*60}")
     logger.info(f"DEGRADATION PREDICTION SUMMARY")
     logger.info(f"{'='*60}")
@@ -443,6 +490,408 @@ def save_predictions(predictions_df: pd.DataFrame, output_path: str):
     for idx, row in output_df.tail(10).iloc[::-1].iterrows():
         logger.info(f"  {row['degradation_score']:+.3f} - {row['risk_category']:20s} - {row['module']}")
     logger.info(f"{'='*60}\n")
+    
+    # Print clickable link
+    logger.info(f"🌐 Open HTML Report: {file_url}")
+    logger.info(f"   (Cmd+Click or Ctrl+Click to open in browser)\n")
+
+
+def _generate_html_report(df: pd.DataFrame, output_path: Path, timestamp: int):
+    """Generate an interactive HTML report with sortable table."""
+    
+    # Calculate statistics
+    total_files = len(df)
+    risk_dist = df['risk_category'].value_counts()
+    mean_score = df['degradation_score'].mean()
+    
+    # Color mapping for risk categories
+    risk_colors = {
+        'improved': '#28a745',
+        'stable': '#17a2b8',
+        'degraded': '#ffc107',
+        'severely-degraded': '#dc3545'
+    }
+    
+    # Format timestamp
+    from datetime import datetime as dt
+    report_date = dt.fromtimestamp(timestamp).strftime('%Y-%m-%d %H:%M:%S')
+    
+    html_template = f"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Code Degradation Risk Prediction Report</title>
+    <style>
+        * {{
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }}
+        
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 20px;
+            color: #333;
+        }}
+        
+        .container {{
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            overflow: hidden;
+        }}
+        
+        .header {{
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }}
+        
+        .header h1 {{
+            font-size: 2em;
+            margin-bottom: 10px;
+            font-weight: 600;
+        }}
+        
+        .header p {{
+            opacity: 0.9;
+            font-size: 0.95em;
+        }}
+        
+        .stats {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            padding: 30px;
+            background: #f8f9fa;
+        }}
+        
+        .stat-card {{
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            text-align: center;
+        }}
+        
+        .stat-card .value {{
+            font-size: 2em;
+            font-weight: bold;
+            margin: 10px 0;
+        }}
+        
+        .stat-card .label {{
+            color: #666;
+            font-size: 0.9em;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }}
+        
+        .stat-card.improved .value {{ color: #28a745; }}
+        .stat-card.stable .value {{ color: #17a2b8; }}
+        .stat-card.degraded .value {{ color: #ffc107; }}
+        .stat-card.severely-degraded .value {{ color: #dc3545; }}
+        
+        .controls {{
+            padding: 20px 30px;
+            background: #f8f9fa;
+            border-bottom: 1px solid #dee2e6;
+            display: flex;
+            gap: 15px;
+            align-items: center;
+            flex-wrap: wrap;
+        }}
+        
+        .controls input {{
+            padding: 10px 15px;
+            border: 1px solid #ced4da;
+            border-radius: 6px;
+            font-size: 0.95em;
+            flex: 1;
+            min-width: 250px;
+        }}
+        
+        .controls select {{
+            padding: 10px 15px;
+            border: 1px solid #ced4da;
+            border-radius: 6px;
+            font-size: 0.95em;
+            background: white;
+        }}
+        
+        .table-container {{
+            overflow-x: auto;
+            padding: 0 30px 30px;
+        }}
+        
+        table {{
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.9em;
+        }}
+        
+        thead {{
+            background: #343a40;
+            color: white;
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }}
+        
+        th {{
+            padding: 12px 8px;
+            text-align: left;
+            font-weight: 600;
+            cursor: pointer;
+            user-select: none;
+            white-space: nowrap;
+        }}
+        
+        th:hover {{
+            background: #495057;
+        }}
+        
+        th.sorted-asc::after {{
+            content: ' ▲';
+            font-size: 0.8em;
+        }}
+        
+        th.sorted-desc::after {{
+            content: ' ▼';
+            font-size: 0.8em;
+        }}
+        
+        td {{
+            padding: 12px 8px;
+            border-bottom: 1px solid #dee2e6;
+        }}
+        
+        tbody tr:hover {{
+            background: #f8f9fa;
+        }}
+        
+        .badge {{
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 0.85em;
+            font-weight: 600;
+            color: white;
+            text-align: center;
+        }}
+        
+        .badge.improved {{ background: #28a745; }}
+        .badge.stable {{ background: #17a2b8; }}
+        .badge.degraded {{ background: #ffc107; color: #333; }}
+        .badge.severely-degraded {{ background: #dc3545; }}
+        
+        .module-name {{
+            font-family: 'Monaco', 'Menlo', 'Courier New', monospace;
+            font-size: 0.85em;
+            color: #495057;
+        }}
+        
+        .score {{
+            font-weight: 600;
+            font-family: 'Monaco', 'Menlo', monospace;
+        }}
+        
+        .score.positive {{ color: #dc3545; }}
+        .score.negative {{ color: #28a745; }}
+        
+        .footer {{
+            padding: 20px 30px;
+            background: #f8f9fa;
+            border-top: 1px solid #dee2e6;
+            text-align: center;
+            color: #666;
+            font-size: 0.85em;
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎯 Code Degradation Risk Report</h1>
+            <p>Generated on {report_date}</p>
+        </div>
+        
+        <div class="stats">
+            <div class="stat-card">
+                <div class="label">Total Files</div>
+                <div class="value">{total_files}</div>
+            </div>
+            <div class="stat-card improved">
+                <div class="label">Improved</div>
+                <div class="value">{risk_dist.get('improved', 0)}</div>
+                <div class="label">{(risk_dist.get('improved', 0) / total_files * 100):.1f}%</div>
+            </div>
+            <div class="stat-card stable">
+                <div class="label">Stable</div>
+                <div class="value">{risk_dist.get('stable', 0)}</div>
+                <div class="label">{(risk_dist.get('stable', 0) / total_files * 100):.1f}%</div>
+            </div>
+            <div class="stat-card degraded">
+                <div class="label">Degraded</div>
+                <div class="value">{risk_dist.get('degraded', 0)}</div>
+                <div class="label">{(risk_dist.get('degraded', 0) / total_files * 100):.1f}%</div>
+            </div>
+            <div class="stat-card severely-degraded">
+                <div class="label">Severely Degraded</div>
+                <div class="value">{risk_dist.get('severely-degraded', 0)}</div>
+                <div class="label">{(risk_dist.get('severely-degraded', 0) / total_files * 100):.1f}%</div>
+            </div>
+            <div class="stat-card">
+                <div class="label">Mean Score</div>
+                <div class="value" style="color: {'#dc3545' if mean_score > 0 else '#28a745'}">{mean_score:+.3f}</div>
+            </div>
+        </div>
+        
+        <div class="controls">
+            <input type="text" id="searchBox" placeholder="🔍 Search files...">
+            <select id="filterCategory">
+                <option value="">All Categories</option>
+                <option value="improved">Improved</option>
+                <option value="stable">Stable</option>
+                <option value="degraded">Degraded</option>
+                <option value="severely-degraded">Severely Degraded</option>
+            </select>
+        </div>
+        
+        <div class="table-container">
+            <table id="predictionsTable">
+                <thead>
+                    <tr>
+"""
+    
+    # Add table headers
+    for col in df.columns:
+        html_template += f'                        <th data-column="{col}">{col.replace("_", " ").title()}</th>\n'
+    
+    html_template += """                    </tr>
+                </thead>
+                <tbody>
+"""
+    
+    # Add table rows
+    for idx, row in df.iterrows():
+        html_template += "                    <tr>\n"
+        for col in df.columns:
+            value = row[col]
+            
+            if col == 'module':
+                html_template += f'                        <td class="module-name">{value}</td>\n'
+            elif col == 'risk_category':
+                html_template += f'                        <td><span class="badge {value}">{value.replace("-", " ").title()}</span></td>\n'
+            elif col == 'degradation_score' or col == 'raw_prediction':
+                score_class = 'positive' if value > 0 else 'negative'
+                html_template += f'                        <td class="score {score_class}">{value:+.4f}</td>\n'
+            elif isinstance(value, (int, np.integer)):
+                html_template += f'                        <td>{value}</td>\n'
+            elif isinstance(value, (float, np.floating)):
+                html_template += f'                        <td>{value:.4f}</td>\n'
+            else:
+                html_template += f'                        <td>{value}</td>\n'
+        
+        html_template += "                    </tr>\n"
+    
+    html_template += """                </tbody>
+            </table>
+        </div>
+        
+        <div class="footer">
+            <p>Code Risk Guard - Degradation Prediction Model v13</p>
+            <p>Powered by XGBoost | Calibrated predictions based on training distribution</p>
+        </div>
+    </div>
+    
+    <script>
+        // Search functionality
+        const searchBox = document.getElementById('searchBox');
+        const filterCategory = document.getElementById('filterCategory');
+        const table = document.getElementById('predictionsTable');
+        const tbody = table.querySelector('tbody');
+        const rows = Array.from(tbody.querySelectorAll('tr'));
+        
+        function filterTable() {
+            const searchTerm = searchBox.value.toLowerCase();
+            const category = filterCategory.value;
+            
+            rows.forEach(row => {
+                const text = row.textContent.toLowerCase();
+                const rowCategory = row.querySelector('.badge')?.className.split(' ')[1] || '';
+                
+                const matchesSearch = text.includes(searchTerm);
+                const matchesCategory = !category || rowCategory === category;
+                
+                row.style.display = (matchesSearch && matchesCategory) ? '' : 'none';
+            });
+        }
+        
+        searchBox.addEventListener('input', filterTable);
+        filterCategory.addEventListener('change', filterTable);
+        
+        // Sorting functionality
+        let currentSort = { column: null, ascending: true };
+        
+        document.querySelectorAll('th').forEach(header => {
+            header.addEventListener('click', () => {
+                const column = header.dataset.column;
+                const columnIndex = Array.from(header.parentElement.children).indexOf(header);
+                
+                // Update sort direction
+                if (currentSort.column === column) {
+                    currentSort.ascending = !currentSort.ascending;
+                } else {
+                    currentSort.column = column;
+                    currentSort.ascending = true;
+                }
+                
+                // Remove sorting indicators from all headers
+                document.querySelectorAll('th').forEach(h => {
+                    h.classList.remove('sorted-asc', 'sorted-desc');
+                });
+                
+                // Add sorting indicator to current header
+                header.classList.add(currentSort.ascending ? 'sorted-asc' : 'sorted-desc');
+                
+                // Sort rows
+                const sortedRows = rows.sort((a, b) => {
+                    const aValue = a.children[columnIndex].textContent.trim();
+                    const bValue = b.children[columnIndex].textContent.trim();
+                    
+                    // Try numeric comparison first
+                    const aNum = parseFloat(aValue);
+                    const bNum = parseFloat(bValue);
+                    
+                    if (!isNaN(aNum) && !isNaN(bNum)) {
+                        return currentSort.ascending ? aNum - bNum : bNum - aNum;
+                    }
+                    
+                    // Fall back to string comparison
+                    return currentSort.ascending 
+                        ? aValue.localeCompare(bValue)
+                        : bValue.localeCompare(aValue);
+                });
+                
+                // Re-append sorted rows
+                sortedRows.forEach(row => tbody.appendChild(row));
+            });
+        });
+    </script>
+</body>
+</html>
+"""
+    
+    # Write HTML file
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write(html_template)
 
 
 def main():

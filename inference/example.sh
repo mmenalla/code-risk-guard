@@ -7,10 +7,10 @@
 #
 
 # Configuration  
-REPO_PATH="/Users/megi/Documents/Other/TechDebtPOC/TDGPTRepos/TechDebtGPT"
-MODEL_PATH="/Users/megi/Documents/Other/TechDebtPOC/code-risk-guard/dags/src/models/artifacts/xgboost_degradation_model_v13.pkl"
+REPO_PATH="/Users/megi/Documents/Other/TechDebtPOC/TDGPTRepos/codewave"
+MODEL_PATH="/Users/megi/Documents/Other/TechDebtPOC/code-risk-guard/dags/src/models/artifacts/xgboost_degradation_model_v14.pkl"
 OUTPUT_DIR="results"
-BRANCH="dev"
+BRANCH="main"
 MAX_COMMITS=10000
 WINDOW_SIZE_DAYS=150
 
