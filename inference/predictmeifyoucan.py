@@ -192,67 +192,46 @@ class FeatureEngineer:
     
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Generate the 12 engineered features used by the model.
-        
-        Note: Base features (lines_per_author, churn_per_commit, bug_ratio, commits_per_day)
-        are already calculated in fetch_commit_data() to match training exactly.
+        Generate all features used by the model (match training exactly).
         """
         df = df.copy()
-        
         # 1. net_lines - Code growth
         if 'lines_added' in df.columns and 'lines_deleted' in df.columns:
             df['net_lines'] = df['lines_added'] - df['lines_deleted']
-        
         # 2. code_stability - Churn relative to additions
         if 'lines_added' in df.columns and 'churn' in df.columns:
             df['code_stability'] = df['churn'] / (df['lines_added'] + 1)
-        
         # 3. is_high_churn_commit - Binary flag for large changes
         if 'churn_per_commit' in df.columns:
             df['is_high_churn_commit'] = (df['churn_per_commit'] > 100).astype(int)
-        
         # 4. bug_commit_rate - Proportion of bug commits
         if 'bug_commits' in df.columns and 'commits' in df.columns:
-            df['bug_commit_rate'] = df['bug_commits'] / (df['commits'] + 1)
-        
+            df['bug_commit_rate'] = np.where(df['commits'] > 0, df['bug_commits'] / df['commits'], 0)
         # 5. commits_squared - Non-linear commit activity
         if 'commits' in df.columns:
             df['commits_squared'] = df['commits'] ** 2
-        
         # 6. author_concentration - Bus factor
         if 'authors' in df.columns:
             df['author_concentration'] = 1.0 / (df['authors'] + 1)
-        
         # 7. lines_per_commit - Average code change size
         if 'lines_added' in df.columns and 'commits' in df.columns:
             df['lines_per_commit'] = df['lines_added'] / (df['commits'] + 1)
-        
         # 8. churn_rate - Churn velocity
         if 'churn' in df.columns and 'days_active' in df.columns:
             df['churn_rate'] = df['churn'] / (df['days_active'] + 1)
-        
         # 9. modification_ratio - Deletion relative to addition
         if 'lines_added' in df.columns and 'lines_deleted' in df.columns:
             df['modification_ratio'] = df['lines_deleted'] / (df['lines_added'] + 1)
-        
         # 10. churn_per_author - Code change per developer
         if 'churn' in df.columns and 'authors' in df.columns:
             df['churn_per_author'] = df['churn'] / (df['authors'] + 1)
-        
         # 11. deletion_rate - Code removal rate
         if 'lines_deleted' in df.columns and 'lines_added' in df.columns:
             df['deletion_rate'] = df['lines_deleted'] / (df['lines_added'] + df['lines_deleted'] + 1)
-        
         # 12. commit_density - Commit frequency
         if 'commits' in df.columns and 'days_active' in df.columns:
             df['commit_density'] = df['commits'] / (df['days_active'] + 1)
-        
-        # 13. degradation_days - Same as days_active (temporal window for degradation)
-        # This feature was added to match the model's expected features
-        if 'days_active' in df.columns:
-            df['degradation_days'] = df['days_active']
-        
-        logger.info(f"✨ Feature engineering complete. Total features: {len(df.columns)}")
+        logger.info(f"✨ Feature engineering complete. All training features engineered.")
         return df
 
 
@@ -263,49 +242,55 @@ class StandaloneRiskPredictor:
         self.model_path = Path(model_path)
         if not self.model_path.exists():
             raise FileNotFoundError(f"Model not found: {model_path}")
-        
+
         logger.info(f"Loading model from {self.model_path}")
         self.model = joblib.load(self.model_path)
         logger.info(f"✅ Model loaded successfully")
-        
+
+        # Load training prediction statistics for calibration
+        import json
+        metadata_path = self.model_path.parent / (self.model_path.stem + "_metadata.json")
+        if metadata_path.exists():
+            with open(metadata_path, "r") as f:
+                self.calibration_stats = json.load(f)
+            logger.info(f"Loaded calibration stats from {metadata_path}")
+        else:
+            logger.warning(f"Calibration metadata not found: {metadata_path}. Using default values.")
+            self.calibration_stats = None
+
         self.feature_engineer = FeatureEngineer()
     
     def predict(self, df: pd.DataFrame) -> pd.DataFrame:
         logger.info(f"Generating features for {len(df)} file records...")
         df_features = self.feature_engineer.transform(df)
-        
-        metadata = df_features[['module']].copy()
-        
-        # Only drop metadata columns, keep all numeric features (base + engineered)
-        drop_cols = [
-            'module', 'repo_name', 'created_at', 'filename', 'label_source', 
-            'risk_category', 'feedback_count', 'last_feedback_at', 'last_modified',
-            'file_age_days', 'avg_commit_interval'  # Not used in model
+
+        # Only keep the selected 14 features for prediction
+        selected_features = [
+            "days_active", "net_lines", "bug_ratio", "commits_per_day", "commits", "commits_squared",
+            "code_stability", "modification_ratio", "commit_density", "bug_commit_rate", "bug_commits",
+            "lines_per_commit", "lines_deleted", "author_concentration"
         ]
-        X = df_features.drop(columns=[c for c in drop_cols if c in df_features.columns], errors='ignore')
-        
+        # Drop all columns except selected features and metadata
+        metadata_cols = ['module']
+        X = df_features[selected_features] if all(f in df_features.columns for f in selected_features) else df_features[[f for f in selected_features if f in df_features.columns]]
+
         expected_features = self.model.get_booster().feature_names
         if expected_features:
             logger.info(f"Model expects {len(expected_features)} features")
             logger.info(f"We have {len(X.columns)} features")
-            
-            # Check for missing features
+            # Fill missing features with 0
             missing_features = set(expected_features) - set(X.columns)
             if missing_features:
                 logger.warning(f"Missing features: {missing_features}")
-                logger.info("Creating missing features with default values...")
                 for feat in missing_features:
                     X[feat] = 0
-            
-            # Check for extra features
+            # Drop extra features
             extra_features = set(X.columns) - set(expected_features)
             if extra_features:
                 logger.info(f"Extra features (will be dropped): {extra_features}")
-            
             X = X[expected_features]
-        
+
         logger.info(f"Using {len(X.columns)} features for prediction")
-        
         logger.info(f"Running inference...")
         raw_predictions = self.model.predict(X)
         
@@ -341,44 +326,43 @@ class StandaloneRiskPredictor:
     
     def _calibrate_predictions(self, predictions: np.ndarray) -> np.ndarray:
         """
-        Calibrate predictions to match training data distribution.
-        
-        Training data statistics (from MongoDB):
-        - Mean: -0.011
-        - Std: 0.082
-        - Range: [-0.531, 0.566]
-        
-        Strategy: Linear scaling + shift to map raw predictions to expected range
+        Calibrate predictions to match training data distribution using saved metadata.
         """
         import numpy as np
-        
-        # Training data statistics
-        TRAIN_MEAN = -0.011
-        TRAIN_STD = 0.082
-        TRAIN_MIN = -0.531
-        TRAIN_MAX = 0.566
-        
+
+        if self.calibration_stats:
+            TRAIN_MEAN = self.calibration_stats.get("mean")
+            TRAIN_STD = self.calibration_stats.get("std")
+            TRAIN_MIN = self.calibration_stats.get("min")
+            TRAIN_MAX = self.calibration_stats.get("max")
+        else:
+            # dont calibrate if no stats
+            TRAIN_MEAN = 0
+            TRAIN_STD = 1
+            TRAIN_MIN = 0
+            TRAIN_MAX = 1
+
         # Calculate raw prediction statistics
         raw_mean = predictions.mean()
         raw_std = predictions.std()
-        
+
         # Method 1: Z-score normalization then scale to training distribution
         # This preserves relative differences while matching the target distribution
         if raw_std > 0:
             # Standardize (z-score)
             z_scores = (predictions - raw_mean) / raw_std
-            
+
             # Scale to training distribution
             calibrated = z_scores * TRAIN_STD + TRAIN_MEAN
-            
+
             # Clip to training data range (with small buffer for unseen cases)
             calibrated = np.clip(calibrated, TRAIN_MIN - 0.1, TRAIN_MAX + 0.1)
         else:
             # All predictions the same - just shift to training mean
             calibrated = np.full_like(predictions, TRAIN_MEAN)
-        
+
         logger.info(f"   📊 Calibration: Shifted mean from {raw_mean:.3f} to {calibrated.mean():.3f}")
-        
+
         return calibrated
 
 

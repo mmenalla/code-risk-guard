@@ -82,6 +82,23 @@ services:
     networks:
       - local
 
+  airflow-worker:
+    build: .
+    depends_on:
+      - postgres
+      - airflow-init
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+      PYTHONPATH: /opt/airflow/dags
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./logs:/opt/airflow/logs
+    entrypoint: >
+      bash -c "airflow worker"
+    networks:
+      - local
+
 
   mongo:
     image: mongo:latest
@@ -125,3 +142,5 @@ volumes:
 networks:
   local:
     driver: bridge
+
+    

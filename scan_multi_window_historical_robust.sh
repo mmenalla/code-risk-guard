@@ -16,7 +16,7 @@
 # Configuration
 WINDOWS=(50 100 150 200)  # Days ago to scan
 SONARQUBE_URL="http://localhost:9000"
-SONARQUBE_TOKEN="${SONARQUBE_TOKEN:-sqa_e052077811c29b2bd0ee0515f14b7f93bcaa1a01}"
+SONARQUBE_TOKEN="squ_12f832ac884d1d84540827faeb5f51e6f78280aa"
 
 # Repository configurations: "name:source_directory"
 REPOS=(

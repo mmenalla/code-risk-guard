@@ -10,6 +10,55 @@ logger = logging.getLogger(__name__)
 
 
 class SonarQubeClient:
+    @staticmethod
+    def debug_list_projects_and_scores():
+        """
+        Helper to print all SonarQube project keys and their maintainability scores.
+        Set SONARQUBE_URL and SONARQUBE_TOKEN before running.
+        """
+        import os
+        base_url = os.getenv('SONARQUBE_URL', 'http://localhost:9000')
+        token = 'squ_ef497f4dedc5a94afe35c963445e836e2304fcde'
+        client = SonarQubeClient(base_url, token)
+        print("Listing all SonarQube project keys:")
+        project_keys = client.list_all_projects()
+        for key in project_keys:
+            print(key)
+        print("\nProject maintainability scores:")
+        for key in project_keys:
+            measures = client.get_project_measures(key)
+            score = client.calculate_maintainability_score(measures) if measures else None
+            print(f"{key}: {score}")
+    def list_all_projects(self) -> List[str]:
+        """
+        List all existing SonarQube project keys.
+        Returns:
+            List of project keys (str)
+        """
+        endpoint = f"{self.base_url}/api/projects/search"
+        params = {"ps": 500}  # Page size
+        all_projects = []
+        page = 1
+        while True:
+            params["p"] = page
+            try:
+                response = self.session.get(endpoint, params=params)
+                response.raise_for_status()
+                data = response.json()
+                projects = data.get("components", [])
+                for proj in projects:
+                    key = proj.get("key")
+                    if key:
+                        all_projects.append(key)
+                paging = data.get("paging", {})
+                if page >= paging.get("total", 1):
+                    break
+                page += 1
+            except Exception as e:
+                logger.error(f"Error listing SonarQube projects: {e}")
+                break
+        logger.info(f"Found {len(all_projects)} SonarQube projects.")
+        return all_projects
     """
     Client for fetching code quality metrics from SonarQube API
     """

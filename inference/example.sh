@@ -8,11 +8,11 @@
 
 # Configuration  
 REPO_PATH="/Users/megi/Documents/Other/TechDebtPOC/TDGPTRepos/codewave"
-MODEL_PATH="/Users/megi/Documents/Other/TechDebtPOC/code-risk-guard/dags/src/models/artifacts/xgboost_degradation_model_v14.pkl"
+MODEL_PATH="/Users/megi/Documents/Other/TechDebtPOC/code-risk-guard/dags/src/models/artifacts/xgboost_degradation_model_multiwindow_v2.pkl"
 OUTPUT_DIR="results"
 BRANCH="main"
 MAX_COMMITS=10000
-WINDOW_SIZE_DAYS=150
+WINDOW_SIZE_DAYS=20
 
 # Color output
 GREEN='\033[0;32m'

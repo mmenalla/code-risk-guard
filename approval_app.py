@@ -20,7 +20,7 @@ load_dotenv()
 
 # ============= CONFIGURATION =============
 
-MONGO_URI = os.getenv("MONGO_URI", "mongodb://admin:admin@localhost:27017/risk_model_db?authSource=admin")
+MONGO_URI = os.getenv("MONGO_URI1", "mongodb://admin:admin@localhost:27017/risk_model_db?authSource=admin")
 DB_NAME = os.getenv("MONGO_DB", "risk_model_db")
 COLLECTION_NAME = os.getenv("MONGO_COLLECTION", "ticket_drafts")
 PREDICTIONS_COLLECTION = os.getenv("MONGO_PREDICTIONS_COLLECTION", "model_predictions")
