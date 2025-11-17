@@ -13,7 +13,7 @@ import logging
 import os
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 import pandas as pd
 
 try:
@@ -113,7 +113,7 @@ class GitCommitCollector:
     
     def _extract_temporal_features(
         self, 
-        commits: List[Commit], 
+        commits: List[Any], 
         days_in_window: int
     ) -> pd.DataFrame:
         """
@@ -475,7 +475,7 @@ class GitCommitCollector:
         start_date: datetime,
         end_date: datetime,
         max_commits: int = 10000
-    ) -> List[Commit]:
+    ) -> List[Any]:
         """
         Get commits within a date range.
         
@@ -506,7 +506,7 @@ class GitCommitCollector:
             logger.error(f"Error getting commits in date range: {e}")
             return []
     
-    def calculate_features_from_commits(self, commits: List[Commit]) -> pd.DataFrame:
+    def calculate_features_from_commits(self, commits: List[Any]) -> pd.DataFrame:
         """
         Calculate file-level features from a list of commits.
         

@@ -664,7 +664,7 @@ def render_feature_importance(model_path: str = None) -> None:
         
         # Get all model files (sorted by version number, latest first)
         model_files = sorted(
-            models_dir.glob("xgboost_risk_model_v*.pkl"),
+            models_dir.glob("xgboost_*.pkl"),
             key=lambda x: int(x.stem.split('_v')[-1]),
             reverse=True
         )
@@ -777,14 +777,14 @@ def render_feature_importance(model_path: str = None) -> None:
             st.plotly_chart(fig, use_container_width=True)
         
         with col_table:
-            st.markdown("**📊 Top 10 Features**")
+            st.markdown("**📊 Top 30 Features**")
             
             # Create dataframe for top features
             import pandas as pd
             top_features_df = pd.DataFrame({
-                'Feature': features[:10],
-                'Score': scores[:10],
-                'Share': [f"{p:.1f}%" for p in percentages[:10]]
+                'Feature': features[:30],
+                'Score': scores[:30],
+                'Share': [f"{p:.1f}%" for p in percentages[:30]]
             })
             
             st.dataframe(

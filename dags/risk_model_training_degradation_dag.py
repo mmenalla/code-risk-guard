@@ -28,9 +28,14 @@ from src.models.train import RiskModelTrainer
 
 logger = logging.getLogger(__name__)
 
-# Multi-Window Configuration
-WINDOW_SIZE_DAYS = int(os.getenv("WINDOW_SIZE_DAYS", "150"))
-TIME_WINDOWS = [150, 300, 450]
+
+
+# Multi-Window Configurations for Task Groups
+WINDOW_CONFIGS = {
+    'window_2x150d': [0, 150, 300],
+    'window_4x50d': [0, 50, 100, 150, 200],
+    'window_3x100d': [0, 100, 200, 300]
+}
 MAX_COMMITS = int(os.getenv("MAX_COMMITS", "10000"))
 LABEL_SOURCE_FILTER = "sonarqube_degradation_multi_window"
 
@@ -52,14 +57,22 @@ def verify_multi_window_projects(**context):
     
     all_expected = []
     missing_projects = []
-    
+    import sys
+    print("Python executable:", sys.executable)
+    print("sys.path:", sys.path)
+    try:
+        import git
+        print("GitPython imported successfully!")
+    except ImportError as e:
+        print("GitPython import failed:", e)
+        
     for repo_name, project_key in zip(Config.REPO_NAMES, Config.SONARQUBE_PROJECT_KEYS):
-        for days_ago in TIME_WINDOWS:
-            historical_key = f"{project_key}-{days_ago}d"
-            all_expected.append(historical_key)
-            
-            if not sonarqube_client.verify_historical_projects_exist([historical_key]):
-                missing_projects.append((repo_name, historical_key, days_ago))
+        for group_windows in WINDOW_CONFIGS.values():
+            for days_ago in group_windows:
+                historical_key = f"{project_key}-{days_ago}d"
+                all_expected.append(historical_key)
+                if not sonarqube_client.verify_historical_projects_exist([historical_key]):
+                    missing_projects.append((repo_name, historical_key, days_ago))
     
     if missing_projects:
         logger.error(f"❌ Missing {len(missing_projects)} historical projects:")
@@ -73,38 +86,57 @@ def verify_multi_window_projects(**context):
         raise ValueError(f"Missing {len(missing_projects)} multi-window projects. Run scanner first.")
     
     logger.info(f"✅ All {len(all_expected)} multi-window projects verified")
-    logger.info(f"   {len(Config.REPO_NAMES)} repos × {len(TIME_WINDOWS)} windows")
+    total_windows = sum(len(windows) for windows in WINDOW_CONFIGS.values())
+    logger.info(f"   {len(Config.REPO_NAMES)} repos × {total_windows} windows (across all groups)")
     
     # Push to XCom for downstream tasks
     context['task_instance'].xcom_push(key='verified_projects', value=all_expected)
 
-def fetch_multi_window_data_task(repo_name: str, window_idx: int, **context):
+def fetch_multi_window_data_task(repo_name: str, window_idx: int, window_size_days: int, **context):
     """Fetch commits and calculate Git features for a specific time window."""
     logger.info(f"🔄 Fetching window {window_idx} data for: {repo_name}")
     
     # Get configuration
     repo_path = f"{Config.REPO_BASE_DIR}/{repo_name}"
     branch = Config.get_branch_for_repo(repo_name)
-    
-    # Calculate window boundaries
+    logger.info(f"[DEBUG] Repo path: {repo_path}")
+    logger.info(f"[DEBUG] Branch: {branch}")
+    logger.info(f"[DEBUG] Repo exists: {os.path.exists(repo_path)}")
+
     reference_date = datetime.now()
-    window_end = reference_date - timedelta(days=window_idx * WINDOW_SIZE_DAYS)
-    window_start = window_end - timedelta(days=WINDOW_SIZE_DAYS)
-    
-    logger.info(f"   Repo: {repo_name}")
-    logger.info(f"   Branch: {branch}")
-    logger.info(f"   Window {window_idx}: {window_start.date()} → {window_end.date()}")
-    
-    # Collect temporal data from this window
+    # Get the window boundaries from the config
+    # For each window, use windows[window_idx] and windows[window_idx+1] as start and end days ago
+    # Use group_name from op_kwargs for explicit window config lookup
+    group_name = context.get('group_name')
+    if group_name is None:
+        logger.error("group_name not provided to fetch_multi_window_data_task")
+        return
+    windows = WINDOW_CONFIGS.get(group_name)
+    if windows is None or window_idx >= len(windows) - 1:
+        logger.error(f"No window config found for group {group_name} and index {window_idx}")
+        return
+    window_start_days = windows[window_idx]
+    window_end_days = windows[window_idx + 1]
+    window_start = reference_date - timedelta(days=window_end_days)
+    window_end = reference_date - timedelta(days=window_start_days)
+    logger.info(f"[DEBUG] Window {window_idx} ({group_name}): {window_start.date()} → {window_end.date()}")
+
     collector = GitCommitCollector(repo_path, branch)
-    
     try:
         features_df = collector.calculate_temporal_features(
             start_date=window_start,
             end_date=window_end,
             max_commits=MAX_COMMITS
         )
-        
+        logger.info(f"[DEBUG] Features DataFrame shape: {features_df.shape}")
+        if hasattr(collector, 'repo'):
+            commits = list(collector.repo.iter_commits(
+                branch,
+                max_count=MAX_COMMITS,
+                since=window_start.strftime('%Y-%m-%d'),
+                until=window_end.strftime('%Y-%m-%d')
+            ))
+            logger.info(f"[DEBUG] Number of commits found: {len(commits)}")
         if features_df.empty:
             logger.warning(f"No features for {repo_name} window {window_idx}")
             context['task_instance'].xcom_push(
@@ -112,62 +144,84 @@ def fetch_multi_window_data_task(repo_name: str, window_idx: int, **context):
                 value=None
             )
             return
-        
         features_df['repo_name'] = repo_name
         features_df['window_id'] = window_idx
         features_df['window_start'] = str(window_start)
         features_df['window_end'] = str(window_end)
-        features_df['window_size_days'] = WINDOW_SIZE_DAYS
-        
+        features_df['window_size_days'] = window_size_days
         logger.info(f"✅ Extracted {len(features_df)} file features from window {window_idx}")
         context['task_instance'].xcom_push(
             key=f'{repo_name}_window{window_idx}_features',
             value=features_df.to_dict('records')
         )
-        
     except Exception as e:
         logger.error(f"❌ Error fetching window {window_idx} for {repo_name}: {e}")
         import traceback
         logger.error(traceback.format_exc())
         raise
 
-def create_multi_window_labels_task(repo_name: str, window_idx: int, **context):
+def create_multi_window_labels_task(repo_name: str, window_idx: int, window_size_days: int, **context):
     """Create degradation labels by comparing SonarQube metrics at window boundaries."""
     import pandas as pd
     
     logger.info(f"🏷️  Creating labels for {repo_name} window {window_idx}")
     
-    # Pull features from XCom
+
+    # Pull features from XCom using correct fetch task_id
+    # Use group_name from op_kwargs for explicit window config lookup
+    group_name = context.get('group_name')
+    if group_name is None:
+        logger.error("group_name not provided to create_multi_window_labels_task")
+        return
+    windows = WINDOW_CONFIGS.get(group_name)
+    if windows is None or window_idx >= len(windows) - 1:
+        logger.error(f"No window config found for group {group_name} and index {window_idx}")
+        return
+    interval_str = f'{windows[window_idx]}_{windows[window_idx + 1]}'
+    fetch_task_id = f'fetch_{repo_name}_window{interval_str}d'
     features_data = context['task_instance'].xcom_pull(
-        task_ids=f'fetch_multi_window_data.fetch_{repo_name}_window{window_idx}',
+        task_ids=f'fetch_{group_name}.{fetch_task_id}',
         key=f'{repo_name}_window{window_idx}_features'
     )
-    
+    logger.info(f"[DEBUG] Fetched features_data for {repo_name} window {window_idx}: {features_data}")
     if not features_data:
         logger.warning(f"No features for {repo_name} window {window_idx}, skipping")
         return
-    
     features_df = pd.DataFrame(features_data)
+    logger.info(f"[DEBUG] features_df shape: {features_df.shape}")
+    logger.info(f"[DEBUG] modules in features_df: {features_df['module'].tolist() if 'module' in features_df.columns else 'No module column'}")
     
     repo_index = Config.REPO_NAMES.index(repo_name)
     base_project_key = Config.SONARQUBE_PROJECT_KEYS[repo_index]
-    
-    window_end_days_ago = window_idx * WINDOW_SIZE_DAYS
-    window_start_days_ago = (window_idx + 1) * WINDOW_SIZE_DAYS
-    
-    if window_end_days_ago == 0:
-        window_end_project = base_project_key
-    else:
-        window_end_project = f"{base_project_key}-{window_end_days_ago}d"
-    
-    window_start_project = f"{base_project_key}-{window_start_days_ago}d"
-    
-    logger.info(f"   Window {window_idx}: [{window_start_days_ago}d → {window_end_days_ago}d ago]")
-    logger.info(f"   Label = quality@{window_end_project} - quality@{window_start_project}")
+    windows = None
+    for group_name, group_windows in WINDOW_CONFIGS.items():
+        if window_size_days in group_windows:
+            windows = group_windows
+            break
+    if windows is None:
+        logger.error(f"No window config found for window size {window_size_days}")
+        return
+    if window_idx >= len(windows) - 1:
+        logger.error(f"Window index {window_idx} out of range for windows {windows}")
+        return
+    # List all SonarQube projects and match by base name and window size
     sonarqube_client = SonarQubeClient(
         Config.SONARQUBE_URL,
         Config.SONARQUBE_TOKEN
     )
+    all_projects = sonarqube_client.list_all_projects()
+    def match_project(base, window):
+        for proj in all_projects:
+            if base in proj and str(window) in proj:
+                return proj
+        return None
+    window_start_project = match_project(base_project_key, windows[window_idx])
+    window_end_project = match_project(base_project_key, windows[window_idx + 1])
+    logger.info(f"   Window {window_idx}: [{windows[window_idx]}d → {windows[window_idx + 1]}d ago]")
+    logger.info(f"   Label = quality@{window_start_project} - quality@{window_end_project}")
+    if not window_start_project or not window_end_project:
+        logger.error(f"Could not find SonarQube projects for base '{base_project_key}' and windows {windows[window_idx]}, {windows[window_idx + 1]}")
+        return
     
     labeled_samples = []
     
@@ -189,7 +243,7 @@ def create_multi_window_labels_task(repo_name: str, window_idx: int, **context):
                 labeled_row['label_source'] = 'sonarqube_degradation_multi_window'
                 labeled_row['window_start_project'] = window_start_project
                 labeled_row['window_end_project'] = window_end_project
-                labeled_row['degradation_days'] = window_start_days_ago - window_end_days_ago
+                labeled_row['degradation_days'] = windows[window_idx + 1] - windows[window_idx]
                 labeled_samples.append(labeled_row)
         except Exception as e:
             logger.error(f"Exception labeling module '{module}': {e}")
@@ -216,22 +270,27 @@ def aggregate_multi_window_data(**context):
     all_labeled_data = []
     window_counts = {}
     
-    for repo_name in Config.REPO_NAMES:
-        for window_idx in range(len(TIME_WINDOWS) - 1):
-            labeled_data = context['task_instance'].xcom_pull(
-                task_ids=f'label_multi_window.label_{repo_name}_window{window_idx}',
-                key=f'{repo_name}_window{window_idx}_labeled'
-            )
-            
-            if labeled_data:
-                df = pd.DataFrame(labeled_data)
-                all_labeled_data.append(df)
-                window_counts[f'{repo_name}_window{window_idx}'] = len(df)
-                logger.info(f"  {repo_name} window {window_idx}: {len(df)} samples")
+    for group_name, windows in WINDOW_CONFIGS.items():
+        for repo_name in Config.REPO_NAMES:
+            for window_idx in range(len(windows) - 1):
+                window_start_days = windows[window_idx]
+                window_end_days = windows[window_idx + 1]
+                interval_str = f'{window_start_days}_{window_end_days}'
+                label_task_id = f'label_{repo_name}_window{interval_str}d'
+                labeled_data = context['task_instance'].xcom_pull(
+                    task_ids=f'label_{group_name}.{label_task_id}',
+                    key=f'{repo_name}_window{window_idx}_labeled'
+                )
+                logger.info(f"[DEBUG] Aggregation: Pulled from {group_name}.{label_task_id} key {repo_name}_window{window_idx}_labeled: {type(labeled_data)} len={len(labeled_data) if labeled_data else 0}")
+                if labeled_data:
+                    df = pd.DataFrame(labeled_data)
+                    all_labeled_data.append(df)
+                    window_counts[f'{repo_name}_window{window_idx}_{group_name}'] = len(df)
+                    logger.info(f"  {repo_name} {group_name} window {window_idx}: {len(df)} samples")
     
     if not all_labeled_data:
         logger.error("❌ No labeled data collected from any repository/window")
-        raise ValueError("No labeled data available for training")
+        # raise ValueError("No labeled data available for training")
     
     combined_df = pd.concat(all_labeled_data, ignore_index=True)
     
@@ -317,6 +376,7 @@ def train_degradation_model(**context):
     )
 
 
+
 with DAG(
     'risk_model_training_degradation',
     default_args=default_args,
@@ -330,41 +390,70 @@ with DAG(
         python_callable=verify_multi_window_projects,
         provide_context=True
     )
-    
-    with TaskGroup('fetch_multi_window_data') as fetch_group:
-        fetch_tasks = []
-        for repo_name in Config.REPO_NAMES:
-            for window_idx in range(len(TIME_WINDOWS)):
-                task = PythonOperator(
-                    task_id=f'fetch_{repo_name}_window{window_idx}',
-                    python_callable=fetch_multi_window_data_task,
-                    op_kwargs={'repo_name': repo_name, 'window_idx': window_idx},
-                    provide_context=True
-                )
-                fetch_tasks.append(task)
-    
-    with TaskGroup('label_multi_window') as label_group:
-        label_tasks = []
-        for repo_name in Config.REPO_NAMES:
-            for window_idx in range(len(TIME_WINDOWS) - 1):
-                task = PythonOperator(
-                    task_id=f'label_{repo_name}_window{window_idx}',
-                    python_callable=create_multi_window_labels_task,
-                    op_kwargs={'repo_name': repo_name, 'window_idx': window_idx},
-                    provide_context=True
-                )
-                label_tasks.append(task)
-    
+
+    # Create TaskGroups for each window config using explicit intervals
+    fetch_groups = {}
+    label_groups = {}
+    for group_name, windows in WINDOW_CONFIGS.items():
+        with TaskGroup(f'fetch_{group_name}') as fetch_group:
+            for repo_name in Config.REPO_NAMES:
+                for window_idx in range(len(windows) - 1):
+                    # Only process valid intervals
+                    if window_idx + 1 >= len(windows):
+                        continue
+                    window_start_days = windows[window_idx]
+                    window_end_days = windows[window_idx + 1]
+                    interval_str = f'{window_start_days}_{window_end_days}'
+                    task_id = f'fetch_{repo_name}_window{interval_str}d'
+                    PythonOperator(
+                        task_id=task_id,
+                        python_callable=fetch_multi_window_data_task,
+                        op_kwargs={
+                            'repo_name': repo_name,
+                            'window_idx': window_idx,
+                            'window_size_days': window_start_days,
+                            'group_name': group_name
+                        },
+                        provide_context=True
+                    )
+        fetch_groups[group_name] = fetch_group
+
+        with TaskGroup(f'label_{group_name}') as label_group:
+            for repo_name in Config.REPO_NAMES:
+                for window_idx in range(len(windows) - 1):
+                    # Only process valid intervals
+                    if window_idx + 1 >= len(windows):
+                        continue
+                    window_start_days = windows[window_idx]
+                    window_end_days = windows[window_idx + 1]
+                    interval_str = f'{window_start_days}_{window_end_days}'
+                    task_id = f'label_{repo_name}_window{interval_str}d'
+                    PythonOperator(
+                        task_id=task_id,
+                        python_callable=create_multi_window_labels_task,
+                        op_kwargs={
+                            'repo_name': repo_name,
+                            'window_idx': window_idx,
+                            'window_size_days': window_start_days,
+                            'group_name': group_name
+                        },
+                        provide_context=True
+                    )
+        label_groups[group_name] = label_group
+
     aggregate_task = PythonOperator(
         task_id='aggregate_multi_window_data',
         python_callable=aggregate_multi_window_data,
         provide_context=True
     )
-    
+
     train_task = PythonOperator(
         task_id='train_degradation_model',
         python_callable=train_degradation_model,
         provide_context=True
     )
-    
-    verify_task >> fetch_group >> label_group >> aggregate_task >> train_task
+
+    # Set dependencies for all groups
+    for group_name in WINDOW_CONFIGS.keys():
+        verify_task >> fetch_groups[group_name] >> label_groups[group_name] >> aggregate_task
+    aggregate_task >> train_task
